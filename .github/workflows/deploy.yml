@@ -37,4 +37,3 @@ jobs:
         run: |
          python src/run_athena_query.py	
 
-

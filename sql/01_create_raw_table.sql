@@ -1,3 +1,5 @@
+DROP TABLE IF EXISTS wa_property_db.wa_property_raw;
+
 CREATE EXTERNAL TABLE wa_property_db.wa_property_raw (
   address string,
   suburb string,

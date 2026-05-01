@@ -12,8 +12,7 @@ QUERY_FILES = [
     "sql/01_create_database.sql",
     "sql/02_drop_raw_table.sql",
     "sql/03_create_raw_table.sql",
-    "sql/04_drop_clean_table.sql",
-    "sql/05_clean_property.sql",
+    "sql/04_clean_property.sql",
 ]
 
 def run_query(query, name=""):

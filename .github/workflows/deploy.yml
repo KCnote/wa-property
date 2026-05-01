@@ -29,11 +29,6 @@ jobs:
           aws s3 sync src/ s3://personal-wa-property-storage-337164669284-ap-southeast-2-an/app/src/ --delete
           aws s3 sync config/ s3://personal-wa-property-storage-337164669284-ap-southeast-2-an/app/config/ --delete
 
-      - name: Clean Athena output folders
-        run: |
-          aws s3 rm s3://personal-wa-property-storage-337164669284-ap-southeast-2-an/processed/property_clean/ --recursive || true
-          aws s3 rm s3://personal-wa-property-storage-337164669284-ap-southeast-2-an/athena-results/tables/ --recursive || true
-
       - name: Install Python deps
         run: |
          pip install boto3

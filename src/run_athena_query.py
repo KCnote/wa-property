@@ -1,38 +1,47 @@
 import boto3
 import time
+from pathlib import Path
 
 athena = boto3.client("athena", region_name="ap-southeast-2")
 
 DATABASE = "wa_property_db"
 OUTPUT = "s3://personal-wa-property-storage-337164669284-ap-southeast-2-an/athena-results/"
-QUERY_FILE = "sql/clean_property.sql"
 
-def run_query():
-    with open(QUERY_FILE, "r") as f:
-        query = f.read()
+QUERY_FILES = [
+    "sql/00_create_database.sql",
+    "sql/clean_property.sql",
+]
+
+def run_query_file(query_file):
+    query = Path(query_file).read_text()
 
     response = athena.start_query_execution(
         QueryString=query,
-        QueryExecutionContext={"Database": DATABASE},
         ResultConfiguration={"OutputLocation": OUTPUT},
     )
 
     query_id = response["QueryExecutionId"]
+    print(f"Running {query_file}: {query_id}")
 
     while True:
         result = athena.get_query_execution(QueryExecutionId=query_id)
-        status = result["QueryExecution"]["Status"]["State"]
+        status_info = result["QueryExecution"]["Status"]
+        status = status_info["State"]
 
         if status in ["SUCCEEDED", "FAILED", "CANCELLED"]:
-            print("Query status:", status)
+            print(f"{query_file} status:", status)
 
             if status != "SUCCEEDED":
-                reason = result["QueryExecution"]["Status"].get("StateChangeReason", "")
-                raise RuntimeError(f"Athena query failed: {reason}")
+                reason = status_info.get("StateChangeReason", "")
+                raise RuntimeError(f"{query_file} failed: {reason}")
 
             break
-            
+
         time.sleep(2)
 
+def main():
+    for query_file in QUERY_FILES:
+        run_query_file(query_file)
+
 if __name__ == "__main__":
-    run_query()
+    main()

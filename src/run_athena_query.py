@@ -8,9 +8,11 @@ DATABASE = "wa_property_db"
 OUTPUT = "s3://personal-wa-property-storage-337164669284-ap-southeast-2-an/athena-results/"
 
 QUERY_FILES = [
-    "sql/00_create_database.sql",
-    "sql/01_create_raw_table.sql",
-    "sql/02_clean_property.sql",
+    "sql/01_create_database.sql",
+    "sql/02_drop_raw_table.sql",
+    "sql/03_create_raw_table.sql",
+    "sql/04_drop_clean_table.sql",
+    "sql/05_clean_property.sql",
 ]
 
 def run_query_file(query_file):

@@ -1,0 +1,1 @@
+DROP TABLE IF EXISTS wa_property_db.wa_property_clean

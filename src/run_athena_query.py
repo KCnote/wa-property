@@ -1,7 +1,7 @@
 import boto3
 import time
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
 
 athena = boto3.client("athena", region_name="ap-southeast-2")
 
@@ -15,15 +15,12 @@ QUERY_FILES = [
     "sql/04_clean_property.sql",
 ]
 
+
 def run_query(query, name=""):
     response = athena.start_query_execution(
         QueryString=query,
-        QueryExecutionContext={
-            "Database": DATABASE
-        },
-        ResultConfiguration={
-            "OutputLocation": OUTPUT
-        },
+        QueryExecutionContext={"Database": DATABASE},
+        ResultConfiguration={"OutputLocation": OUTPUT},
     )
 
     query_id = response["QueryExecutionId"]
@@ -47,27 +44,41 @@ def run_query(query, name=""):
 
 
 def main():
-    # 🔥 run_id 생성
-    run_id = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    # 🔥 run_id 생성 (utc deprecated 해결)
+    run_id = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
 
-    # 🔥 동적 값
-    output_path = f"s3://personal-wa-property-storage-337164669284-ap-southeast-2-an/processed/property_clean/run_id={run_id}/"
+    output_path = (
+        "s3://personal-wa-property-storage-337164669284-ap-southeast-2-an/"
+        f"processed/property_clean/run_id={run_id}/"
+    )
+
     table_name = f"wa_property_clean_{run_id}"
 
     print("Run ID:", run_id)
     print("Output path:", output_path)
     print("Table name:", table_name)
 
+    # 1. SQL 파일 실행
     for query_file in QUERY_FILES:
         query = Path(query_file).read_text()
 
-        # 🔥 SQL 템플릿 변수 치환
         query = query.format(
             output_path=output_path,
-            table_name=table_name
+            table_name=table_name,
         )
 
         run_query(query, query_file)
+
+    # 🔥 2. 최신 view 자동 생성
+    view_query = f"""
+    CREATE OR REPLACE VIEW wa_property_db.wa_property_latest AS
+    SELECT *
+    FROM wa_property_db.{table_name}
+    """
+
+    run_query(view_query, "create_latest_view")
+
+    print("✅ Latest view updated:", table_name)
 
 
 if __name__ == "__main__":

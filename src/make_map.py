@@ -31,6 +31,7 @@ def load_data():
     WHERE latitude IS NOT NULL
       AND longitude IS NOT NULL
       AND price IS NOT NULL
+    LIMIT 500
     """
 
     return wr.athena.read_sql_query(

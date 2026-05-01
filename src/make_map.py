@@ -86,6 +86,38 @@ def add_kmeans_cluster(df, n_clusters=6):
     return df
 
 
+def house_category_name(group):
+    mapping = {
+        0: "Affordable Suburbs",
+        1: "Family Housing",
+        2: "Premium Housing",
+        3: "Inner-city High Price",
+        4: "Large Land Value Homes",
+        5: "Compact Budget Homes",
+    }
+
+    if group is None:
+        return "Unknown"
+
+    return mapping.get(int(group), "Unknown")
+
+
+def house_category_description(group):
+    mapping = {
+        0: "Lower-price suburban homes",
+        1: "Typical family-oriented homes",
+        2: "Higher-price premium properties",
+        3: "Expensive homes in compact or central areas",
+        4: "Homes with relatively larger land value",
+        5: "Smaller and more budget-friendly homes",
+    }
+
+    if group is None:
+        return "Unknown"
+
+    return mapping.get(int(group), "Unknown")
+
+
 def price_color(price):
     if price < 400000:
         return "#1a9850"
@@ -104,20 +136,20 @@ def price_color(price):
     return "#a50026"
 
 
-def kmeans_border_color(cluster_group):
+def house_type_border_color(group):
     colors = [
-        "#1f77b4",  # blue
-        "#ff7f0e",  # orange
-        "#2ca02c",  # green
-        "#d62728",  # red
-        "#9467bd",  # purple
-        "#000000",  # black
+        "#1f77b4",
+        "#ff7f0e",
+        "#2ca02c",
+        "#d62728",
+        "#9467bd",
+        "#000000",
     ]
 
-    if cluster_group is None:
+    if group is None:
         return "#666666"
 
-    return colors[int(cluster_group) % len(colors)]
+    return colors[int(group) % len(colors)]
 
 
 def land_radius(land_area):
@@ -297,10 +329,11 @@ def add_legend(m):
         border-radius: 8px;
         font-size: 13px;
         box-shadow: 0 0 8px rgba(0,0,0,0.3);
+        max-width: 310px;
     ">
         <b>Map Meaning</b><br><br>
 
-        <b>Fill colour = Price</b><br>
+        <b>Fill Colour = Price</b><br>
         <span style="background:#1a9850;width:14px;height:14px;display:inline-block;"></span> &lt; $400k<br>
         <span style="background:#66bd63;width:14px;height:14px;display:inline-block;"></span> $400k - $500k<br>
         <span style="background:#a6d96a;width:14px;height:14px;display:inline-block;"></span> $500k - $600k<br>
@@ -310,15 +343,15 @@ def add_legend(m):
         <span style="background:#d73027;width:14px;height:14px;display:inline-block;"></span> $900k - $1M<br>
         <span style="background:#a50026;width:14px;height:14px;display:inline-block;"></span> $1M+<br><br>
 
-        <b>Border colour = KMeans group</b><br>
-        <span style="border:3px solid #1f77b4;width:14px;height:14px;display:inline-block;"></span> Group 0<br>
-        <span style="border:3px solid #ff7f0e;width:14px;height:14px;display:inline-block;"></span> Group 1<br>
-        <span style="border:3px solid #2ca02c;width:14px;height:14px;display:inline-block;"></span> Group 2<br>
-        <span style="border:3px solid #d62728;width:14px;height:14px;display:inline-block;"></span> Group 3<br>
-        <span style="border:3px solid #9467bd;width:14px;height:14px;display:inline-block;"></span> Group 4<br>
-        <span style="border:3px solid #000000;width:14px;height:14px;display:inline-block;"></span> Group 5<br><br>
+        <b>Border Colour = House Classification</b><br>
+        <span style="border:3px solid #1f77b4;width:14px;height:14px;display:inline-block;"></span> Affordable Suburbs<br>
+        <span style="border:3px solid #ff7f0e;width:14px;height:14px;display:inline-block;"></span> Family Housing<br>
+        <span style="border:3px solid #2ca02c;width:14px;height:14px;display:inline-block;"></span> Premium Housing<br>
+        <span style="border:3px solid #d62728;width:14px;height:14px;display:inline-block;"></span> Inner-city High Price<br>
+        <span style="border:3px solid #9467bd;width:14px;height:14px;display:inline-block;"></span> Large Land Value Homes<br>
+        <span style="border:3px solid #000000;width:14px;height:14px;display:inline-block;"></span> Compact Budget Homes<br><br>
 
-        <b>Point size = Land area</b>
+        <b>Point Size = Land Area</b>
     </div>
     """
 
@@ -339,7 +372,7 @@ def create_map(df):
     )
 
     cluster = MarkerCluster(
-        name="Price + KMeans Property Cluster",
+        name="Property Price and House Classification",
         icon_create_function=cluster_icon_function(),
         options={
             "showCoverageOnHover": False,
@@ -352,9 +385,11 @@ def create_map(df):
 
     for _, row in df.iterrows():
         price = float(row["price"])
+        house_type = house_category_name(row["cluster_group"])
+        description = house_category_description(row["cluster_group"])
 
         fill_color = price_color(price)
-        border_color = kmeans_border_color(row["cluster_group"])
+        border_color = house_type_border_color(row["cluster_group"])
         radius = land_radius(row["land_area"])
 
         popup = f"""
@@ -364,7 +399,8 @@ def create_map(df):
         Bathrooms: {row["bathrooms"]}<br>
         Garage: {row["garage"]}<br>
         Floor area: {row["floor_area"]}<br>
-        KMeans Group: {row["cluster_group"]}
+        <b>House Type:</b> {house_type}<br>
+        <small>{description}</small>
         """
 
         marker = folium.CircleMarker(
@@ -375,7 +411,7 @@ def create_map(df):
             fill_color=fill_color,
             fill_opacity=0.78,
             weight=4,
-            popup=folium.Popup(popup, max_width=300),
+            popup=folium.Popup(popup, max_width=320),
         )
 
         marker.options["price"] = price
@@ -417,8 +453,15 @@ def main():
 
     df = add_kmeans_cluster(df, n_clusters=6)
 
-    print("KMeans cluster counts:")
+    print("House classification counts:")
     print(df["cluster_group"].value_counts().sort_index())
+
+    print("House classification summary:")
+    print(
+        df.groupby("cluster_group")[
+            ["price", "bedrooms", "bathrooms", "garage", "land_area", "floor_area"]
+        ].mean()
+    )
 
     m = create_map(df)
     m.save(OUTPUT_HTML)

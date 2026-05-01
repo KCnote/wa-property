@@ -7,6 +7,9 @@ from jinja2 import Template
 
 from sklearn.cluster import KMeans
 from sklearn.preprocessing import StandardScaler
+from sklearn.neighbors import BallTree
+
+import numpy as np
 
 DATABASE = "wa_property_db"
 TABLE = "wa_property_latest"
@@ -65,9 +68,6 @@ def add_kmeans_cluster(df, n_clusters=6):
 
     model_df = df.dropna(subset=features).copy()
 
-    if model_df.empty:
-        raise RuntimeError("No valid rows for KMeans clustering.")
-
     scaler = StandardScaler()
     X_scaled = scaler.fit_transform(model_df[features])
 
@@ -86,6 +86,92 @@ def add_kmeans_cluster(df, n_clusters=6):
     return df
 
 
+def add_local_price_gap_zones(
+    df,
+    radius_m=500,
+    min_price_gap=250000,
+    max_pairs=250,
+):
+    """
+    Finds nearby property pairs where the price difference is unusually large.
+
+    radius_m:
+        Only compare homes within this distance.
+
+    min_price_gap:
+        Minimum price difference required to mark the pair.
+
+    max_pairs:
+        Limits the number of visual lines on the map to keep the HTML lighter.
+    """
+
+    work_df = df.dropna(
+        subset=["latitude", "longitude", "price", "house_group"]
+    ).copy()
+
+    if work_df.empty:
+        df["price_gap_zone"] = False
+        return df, []
+
+    coords_rad = np.radians(work_df[["latitude", "longitude"]].to_numpy())
+    prices = work_df["price"].to_numpy()
+
+    tree = BallTree(coords_rad, metric="haversine")
+
+    earth_radius_m = 6371000
+    radius_rad = radius_m / earth_radius_m
+
+    neighbors = tree.query_radius(coords_rad, r=radius_rad)
+
+    gap_pairs = []
+    seen = set()
+
+    for i, neighbor_indices in enumerate(neighbors):
+        for j in neighbor_indices:
+            if i == j:
+                continue
+
+            pair_key = tuple(sorted((i, j)))
+            if pair_key in seen:
+                continue
+
+            seen.add(pair_key)
+
+            price_gap = abs(float(prices[i]) - float(prices[j]))
+
+            if price_gap >= min_price_gap:
+                row_i = work_df.iloc[i]
+                row_j = work_df.iloc[j]
+
+                gap_pairs.append(
+                    {
+                        "i_index": row_i.name,
+                        "j_index": row_j.name,
+                        "lat1": row_i["latitude"],
+                        "lon1": row_i["longitude"],
+                        "lat2": row_j["latitude"],
+                        "lon2": row_j["longitude"],
+                        "address1": row_i["address"],
+                        "address2": row_j["address"],
+                        "price1": float(row_i["price"]),
+                        "price2": float(row_j["price"]),
+                        "gap": price_gap,
+                    }
+                )
+
+    gap_pairs = sorted(gap_pairs, key=lambda x: x["gap"], reverse=True)
+    gap_pairs = gap_pairs[:max_pairs]
+
+    df = df.copy()
+    df["price_gap_zone"] = False
+
+    for pair in gap_pairs:
+        df.loc[pair["i_index"], "price_gap_zone"] = True
+        df.loc[pair["j_index"], "price_gap_zone"] = True
+
+    return df, gap_pairs
+
+
 def house_category_name(group):
     mapping = {
         0: "Affordable Suburbs",
@@ -95,9 +181,6 @@ def house_category_name(group):
         4: "Large Land Value Homes",
         5: "Compact Budget Homes",
     }
-
-    if group is None:
-        return "Unknown"
 
     return mapping.get(int(group), "Unknown")
 
@@ -111,9 +194,6 @@ def house_category_description(group):
         4: "Homes with relatively larger land value",
         5: "Smaller and more budget-friendly homes",
     }
-
-    if group is None:
-        return "Unknown"
 
     return mapping.get(int(group), "Unknown")
 
@@ -145,9 +225,6 @@ def house_type_color(group):
         "#9467bd",
         "#000000",
     ]
-
-    if group is None:
-        return "#666666"
 
     return colors[int(group) % len(colors)]
 
@@ -195,25 +272,14 @@ def price_cluster_icon_function():
             return "#a50026";
         }
 
-        function getTextColor(bgColor) {
-            var c = bgColor.substring(1);
-            var rgb = parseInt(c, 16);
-            var r = (rgb >> 16) & 0xff;
-            var g = (rgb >> 8) & 0xff;
-            var b = rgb & 0xff;
-            var brightness = (r * 299 + g * 587 + b * 114) / 1000;
-            return brightness > 150 ? "black" : "white";
-        }
-
         var color = getColor(avg);
-        var textColor = getTextColor(color);
         var avgText = "$" + Math.round(avg / 1000) + "k";
 
         return L.divIcon({
             html:
                 '<div style="' +
                 'background:' + color + ';' +
-                'color:' + textColor + ';' +
+                'color:white;' +
                 'border:3px solid white;' +
                 'border-radius:50%;' +
                 'width:58px;' +
@@ -245,9 +311,7 @@ def house_cluster_icon_function():
 
         markers.forEach(function(marker) {
             var g = marker.options.houseGroup;
-            if (g !== undefined && g !== null) {
-                counts[g] = (counts[g] || 0) + 1;
-            }
+            counts[g] = (counts[g] || 0) + 1;
         });
 
         var majorityGroup = 0;
@@ -260,12 +324,8 @@ def house_cluster_icon_function():
             }
         });
 
-        function getHouseColor(group) {
-            var colors = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd", "#000000"];
-            return colors[Number(group) % colors.length];
-        }
-
-        var color = getHouseColor(majorityGroup);
+        var colors = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd", "#000000"];
+        var color = colors[Number(majorityGroup) % colors.length];
 
         return L.divIcon({
             html:
@@ -332,15 +392,11 @@ class ClusterAreaLayer(MacroElement):
             var groupCounts = {};
 
             markers.forEach(function(marker) {
-                if (marker.options.price !== undefined && marker.options.price !== null) {
-                    priceSum += Number(marker.options.price);
-                    priceCount += 1;
-                }
+                priceSum += Number(marker.options.price);
+                priceCount += 1;
 
-                if (marker.options.houseGroup !== undefined && marker.options.houseGroup !== null) {
-                    var g = marker.options.houseGroup;
-                    groupCounts[g] = (groupCounts[g] || 0) + 1;
-                }
+                var g = marker.options.houseGroup;
+                groupCounts[g] = (groupCounts[g] || 0) + 1;
             });
 
             var majorityGroup = 0;
@@ -440,31 +496,19 @@ def add_legend(m):
         border-radius: 8px;
         font-size: 13px;
         box-shadow: 0 0 8px rgba(0,0,0,0.3);
-        max-width: 330px;
+        max-width: 340px;
     ">
         <b>Map Meaning</b><br><br>
 
         <b>Price View</b><br>
-        Fill colour and area shade = average price<br><br>
-
-        <span style="background:#1a9850;width:14px;height:14px;display:inline-block;"></span> &lt; $400k<br>
-        <span style="background:#66bd63;width:14px;height:14px;display:inline-block;"></span> $400k - $500k<br>
-        <span style="background:#a6d96a;width:14px;height:14px;display:inline-block;"></span> $500k - $600k<br>
-        <span style="background:#fee08b;width:14px;height:14px;display:inline-block;"></span> $600k - $700k<br>
-        <span style="background:#fdae61;width:14px;height:14px;display:inline-block;"></span> $700k - $800k<br>
-        <span style="background:#f46d43;width:14px;height:14px;display:inline-block;"></span> $800k - $900k<br>
-        <span style="background:#d73027;width:14px;height:14px;display:inline-block;"></span> $900k - $1M<br>
-        <span style="background:#a50026;width:14px;height:14px;display:inline-block;"></span> $1M+<br><br>
+        Colour and area shade = average price<br><br>
 
         <b>House Classification View</b><br>
-        Fill colour and area shade = house type<br><br>
+        Colour and area shade = house type<br><br>
 
-        <span style="background:#1f77b4;width:14px;height:14px;display:inline-block;"></span> Affordable Suburbs<br>
-        <span style="background:#ff7f0e;width:14px;height:14px;display:inline-block;"></span> Family Housing<br>
-        <span style="background:#2ca02c;width:14px;height:14px;display:inline-block;"></span> Premium Housing<br>
-        <span style="background:#d62728;width:14px;height:14px;display:inline-block;"></span> Inner-city High Price<br>
-        <span style="background:#9467bd;width:14px;height:14px;display:inline-block;"></span> Large Land Value Homes<br>
-        <span style="background:#000000;width:14px;height:14px;display:inline-block;"></span> Compact Budget Homes<br><br>
+        <b>Local Price Gap Zones</b><br>
+        <span style="background:red;width:20px;height:4px;display:inline-block;"></span>
+        Nearby homes with large price difference<br><br>
 
         <b>Point Size = Land Area</b>
     </div>
@@ -473,7 +517,7 @@ def add_legend(m):
     m.get_root().html.add_child(folium.Element(legend_html))
 
 
-def create_map(df):
+def create_map(df, gap_pairs):
     if df.empty:
         raise RuntimeError("No data found from Athena.")
 
@@ -493,6 +537,11 @@ def create_map(df):
 
     house_layer = folium.FeatureGroup(
         name="House Classification View",
+        show=False,
+    ).add_to(m)
+
+    gap_layer = folium.FeatureGroup(
+        name="Local Price Gap Zones",
         show=False,
     ).add_to(m)
 
@@ -553,6 +602,43 @@ def create_map(df):
         house_marker.options["houseGroup"] = int(row["house_group"])
         house_marker.add_to(house_cluster)
 
+    for pair in gap_pairs:
+        line_popup = f"""
+        <b>Local Price Gap Zone</b><br>
+        Price gap: ${pair["gap"]:,.0f}<br><br>
+        <b>Home A</b><br>
+        {pair["address1"]}<br>
+        ${pair["price1"]:,.0f}<br><br>
+        <b>Home B</b><br>
+        {pair["address2"]}<br>
+        ${pair["price2"]:,.0f}
+        """
+
+        folium.PolyLine(
+            locations=[
+                [pair["lat1"], pair["lon1"]],
+                [pair["lat2"], pair["lon2"]],
+            ],
+            color="red",
+            weight=4,
+            opacity=0.75,
+            popup=folium.Popup(line_popup, max_width=350),
+        ).add_to(gap_layer)
+
+        mid_lat = (pair["lat1"] + pair["lat2"]) / 2
+        mid_lon = (pair["lon1"] + pair["lon2"]) / 2
+
+        folium.CircleMarker(
+            location=[mid_lat, mid_lon],
+            radius=9,
+            color="red",
+            fill=True,
+            fill_color="red",
+            fill_opacity=0.35,
+            weight=2,
+            popup=folium.Popup(line_popup, max_width=350),
+        ).add_to(gap_layer)
+
     price_area_layer = ClusterAreaLayer(
         map_name=m.get_name(),
         parent_layer_name=price_layer.get_name(),
@@ -599,17 +685,19 @@ def main():
 
     df = add_kmeans_cluster(df, n_clusters=6)
 
+    df, gap_pairs = add_local_price_gap_zones(
+        df,
+        radius_m=500,
+        min_price_gap=250000,
+        max_pairs=250,
+    )
+
     print("House classification counts:")
     print(df["house_group"].value_counts().sort_index())
 
-    print("House classification summary:")
-    print(
-        df.groupby("house_group")[
-            ["price", "bedrooms", "bathrooms", "garage", "land_area", "floor_area"]
-        ].mean()
-    )
+    print("Local price gap pairs:", len(gap_pairs))
 
-    m = create_map(df)
+    m = create_map(df, gap_pairs)
     m.save(OUTPUT_HTML)
 
     print(f"Generated {OUTPUT_HTML}")

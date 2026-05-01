@@ -1,4 +1,4 @@
-CREATE TABLE wa_property_db.wa_property_clean
+CREATE TABLE wa_property_db.{table_name}
 WITH (
   format = 'PARQUET',
   external_location = '{output_path}'

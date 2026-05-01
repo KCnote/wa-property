@@ -3,3 +3,4 @@ awswrangler
 pandas
 pyarrow
 folium
+scikit-learn

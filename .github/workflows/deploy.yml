@@ -35,6 +35,5 @@ jobs:
 
       - name: Run Athena query
         run: |
-         python src/run_athena_query.py	
-
+         python src/run_athena_query.py
 

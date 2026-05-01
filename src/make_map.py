@@ -31,7 +31,6 @@ def load_data():
     WHERE latitude IS NOT NULL
       AND longitude IS NOT NULL
       AND price IS NOT NULL
-    LIMIT 5
     """
 
     return wr.athena.read_sql_query(
@@ -102,8 +101,7 @@ def upload_to_s3():
             "CacheControl": "no-cache",
         },
     )
-
-
+d
 def main():
     df = load_data()
 

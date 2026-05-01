@@ -29,11 +29,21 @@ jobs:
           aws s3 sync src/ s3://personal-wa-property-storage-337164669284-ap-southeast-2-an/app/src/ --delete
           aws s3 sync config/ s3://personal-wa-property-storage-337164669284-ap-southeast-2-an/app/config/ --delete
 
-      - name: Install Python deps
-        run: |
-         pip install boto3
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
 
-      - name: Run Athena query
+      - name: Install Python dependencies
         run: |
-         python src/run_athena_query.py
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run Athena SQL pipeline
+        run: |
+          python src/run_athena_query.py
+
+      - name: Generate and deploy map
+        run: |
+          python src/make_map.py
 

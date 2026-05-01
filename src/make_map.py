@@ -1,13 +1,11 @@
 import awswrangler as wr
 import folium
+from folium.plugins import MarkerCluster
 
 DATABASE = "wa_property_db"
 TABLE = "wa_property_latest"
 
-ATHENA_OUTPUT = (
-    "s3://personal-wa-property-storage-337164669284-ap-southeast-2-an/athena-results/"
-)
-
+ATHENA_OUTPUT = "s3://personal-wa-property-storage-337164669284-ap-southeast-2-an/athena-results/"
 DEPLOY_BUCKET = "personal-wa-property-server-337164669284-ap-southeast-2-an"
 OUTPUT_HTML = "index.html"
 
@@ -22,8 +20,13 @@ def load_data():
       bathrooms,
       garage,
       land_area,
+      floor_area,
+      date_sold,
+      postcode,
       latitude,
-      longitude
+      longitude,
+      nearest_sch,
+      nearest_sch_dist
     FROM {DATABASE}.{TABLE}
     WHERE latitude IS NOT NULL
       AND longitude IS NOT NULL
@@ -40,15 +43,14 @@ def load_data():
 def price_color(price):
     if price < 500000:
         return "green"
-    elif price < 800000:
+    if price < 800000:
         return "orange"
-    else:
-        return "red"
+    return "red"
 
 
 def create_map(df):
     if df.empty:
-        raise RuntimeError("No data found from Athena query.")
+        raise RuntimeError("No data found from Athena.")
 
     center_lat = df["latitude"].mean()
     center_lon = df["longitude"].mean()
@@ -59,15 +61,21 @@ def create_map(df):
         tiles="OpenStreetMap",
     )
 
+    cluster = MarkerCluster().add_to(m)
+
     for _, row in df.iterrows():
         popup = f"""
-        <b>{row['address']}</b><br>
-        Suburb: {row['suburb']}<br>
-        Price: ${row['price']:,.0f}<br>
-        Bedrooms: {row['bedrooms']}<br>
-        Bathrooms: {row['bathrooms']}<br>
-        Garage: {row['garage']}<br>
-        Land area: {row['land_area']}
+        <b>{row["address"]}</b><br>
+        Suburb: {row["suburb"]}<br>
+        Price: ${row["price"]:,.0f}<br>
+        Bedrooms: {row["bedrooms"]}<br>
+        Bathrooms: {row["bathrooms"]}<br>
+        Garage: {row["garage"]}<br>
+        Land area: {row["land_area"]}<br>
+        Floor area: {row["floor_area"]}<br>
+        Sold: {row["date_sold"]}<br>
+        School: {row["nearest_sch"]}<br>
+        School dist: {row["nearest_sch_dist"]}
         """
 
         folium.CircleMarker(
@@ -77,8 +85,8 @@ def create_map(df):
             fill=True,
             fill_color=price_color(row["price"]),
             fill_opacity=0.75,
-            popup=folium.Popup(popup, max_width=300),
-        ).add_to(m)
+            popup=folium.Popup(popup, max_width=350),
+        ).add_to(cluster)
 
     return m
 

@@ -45,7 +45,7 @@ def load_data():
 
 def price_color(price):
     if price < 400000:
-        return "#1a9850"   # green
+        return "#1a9850"
     if price < 500000:
         return "#66bd63"
     if price < 600000:
@@ -58,7 +58,7 @@ def price_color(price):
         return "#f46d43"
     if price < 1000000:
         return "#d73027"
-    return "#a50026"       # dark red
+    return "#a50026"
 
 
 def cluster_icon_function():
@@ -88,18 +88,31 @@ def cluster_icon_function():
             return "#a50026";
         }
 
+        function getTextColor(bgColor) {
+            var c = bgColor.substring(1);
+            var rgb = parseInt(c, 16);
+            var r = (rgb >> 16) & 0xff;
+            var g = (rgb >> 8) & 0xff;
+            var b = rgb & 0xff;
+
+            var brightness = (r * 299 + g * 587 + b * 114) / 1000;
+
+            return brightness > 150 ? "black" : "white";
+        }
+
         var color = getColor(avg);
+        var textColor = getTextColor(color);
         var avgText = "$" + Math.round(avg / 1000) + "k";
 
         return L.divIcon({
             html:
                 '<div style="' +
                 'background:' + color + ';' +
-                'color:white;' +
+                'color:' + textColor + ';' +
                 'border:3px solid white;' +
                 'border-radius:50%;' +
-                'width:54px;' +
-                'height:54px;' +
+                'width:58px;' +
+                'height:58px;' +
                 'display:flex;' +
                 'flex-direction:column;' +
                 'align-items:center;' +
@@ -109,10 +122,10 @@ def cluster_icon_function():
                 'box-shadow:0 0 6px rgba(0,0,0,0.45);' +
                 '">' +
                 '<div>' + avgText + '</div>' +
-                '<div style="font-size:10px;">' + count + '</div>' +
+                '<div style="font-size:10px;">' + count + ' homes</div>' +
                 '</div>',
             className: "price-cluster-icon",
-            iconSize: [54, 54]
+            iconSize: [58, 58]
         });
     }
     """
@@ -166,7 +179,6 @@ class ClusterAreaLayer(MacroElement):
                 if (layer instanceof L.MarkerCluster) {
                     var result = getClusterAveragePrice(layer);
                     var avg = result.avg;
-                    var count = result.count;
                     var color = getAvgPriceColor(avg);
                     var bounds = layer.getBounds();
 
@@ -174,7 +186,7 @@ class ClusterAreaLayer(MacroElement):
                         color: color,
                         weight: 2,
                         fillColor: color,
-                        fillOpacity: 0.18,
+                        fillOpacity: 0.16,
                         interactive: false
                     });
 
@@ -258,6 +270,7 @@ def create_map(df):
         map_name=m.get_name(),
         cluster_name=cluster.get_name(),
     )
+
     m.get_root().add_child(area_layer)
 
     folium.LayerControl().add_to(m)

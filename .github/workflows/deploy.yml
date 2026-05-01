@@ -1,0 +1,30 @@
+name: Deploy Pipeline Files to S3
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::<ACCOUNT_ID>:role/GitHubActionsDeployRole
+          aws-region: ap-southeast-2
+
+      - name: Deploy files to S3
+        run: |
+          aws s3 sync sql/ s3://wa-property-pipeline-kang/app/sql/ --delete
+          aws s3 sync src/ s3://wa-property-pipeline-kang/app/src/ --delete
+          aws s3 sync config/ s3://wa-property-pipeline-kang/app/config/ --delete

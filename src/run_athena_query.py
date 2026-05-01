@@ -15,7 +15,6 @@ QUERY_FILES = [
     "sql/04_clean_property.sql",
 ]
 
-
 def run_query(query, name=""):
     response = athena.start_query_execution(
         QueryString=query,

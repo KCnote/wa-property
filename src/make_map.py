@@ -96,6 +96,11 @@ def upload_to_s3():
     wr.s3.upload(
         local_file=OUTPUT_HTML,
         path=f"s3://{DEPLOY_BUCKET}/{OUTPUT_HTML}",
+        boto3_session=None,
+        s3_additional_kwargs={
+            "ContentType": "text/html; charset=utf-8",
+            "CacheControl": "no-cache",
+        },
     )
 
 

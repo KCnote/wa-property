@@ -24,9 +24,14 @@ def run_query():
         status = result["QueryExecution"]["Status"]["State"]
 
         if status in ["SUCCEEDED", "FAILED", "CANCELLED"]:
-            print(status)
-            break
+            print("Query status:", status)
 
+            if status != "SUCCEEDED":
+                reason = result["QueryExecution"]["Status"].get("StateChangeReason", "")
+                raise RuntimeError(f"Athena query failed: {reason}")
+
+            break
+            
         time.sleep(2)
 
 if __name__ == "__main__":

@@ -27,12 +27,8 @@ def load_data():
       garage,
       land_area,
       floor_area,
-      date_sold,
-      postcode,
       latitude,
-      longitude,
-      nearest_sch,
-      nearest_sch_dist
+      longitude
     FROM {DATABASE}.{TABLE}
     WHERE latitude IS NOT NULL
       AND longitude IS NOT NULL
@@ -108,6 +104,22 @@ def price_color(price):
     return "#a50026"
 
 
+def kmeans_border_color(cluster_group):
+    colors = [
+        "#1f77b4",  # blue
+        "#ff7f0e",  # orange
+        "#2ca02c",  # green
+        "#d62728",  # red
+        "#9467bd",  # purple
+        "#000000",  # black
+    ]
+
+    if cluster_group is None:
+        return "#666666"
+
+    return colors[int(cluster_group) % len(colors)]
+
+
 def land_radius(land_area):
     land_area = float(land_area)
 
@@ -157,6 +169,7 @@ def cluster_icon_function():
             var r = (rgb >> 16) & 0xff;
             var g = (rgb >> 8) & 0xff;
             var b = rgb & 0xff;
+
             var brightness = (r * 299 + g * 587 + b * 114) / 1000;
             return brightness > 150 ? "black" : "white";
         }
@@ -247,7 +260,7 @@ class ClusterAreaLayer(MacroElement):
                         color: color,
                         weight: 2,
                         fillColor: color,
-                        fillOpacity: 0.16,
+                        fillOpacity: 0.12,
                         interactive: false
                     });
 
@@ -271,6 +284,47 @@ class ClusterAreaLayer(MacroElement):
         """)
 
 
+def add_legend(m):
+    legend_html = """
+    <div style="
+        position: fixed;
+        bottom: 30px;
+        left: 30px;
+        z-index: 9999;
+        background: white;
+        padding: 12px;
+        border: 2px solid #999;
+        border-radius: 8px;
+        font-size: 13px;
+        box-shadow: 0 0 8px rgba(0,0,0,0.3);
+    ">
+        <b>Map Meaning</b><br><br>
+
+        <b>Fill colour = Price</b><br>
+        <span style="background:#1a9850;width:14px;height:14px;display:inline-block;"></span> &lt; $400k<br>
+        <span style="background:#66bd63;width:14px;height:14px;display:inline-block;"></span> $400k - $500k<br>
+        <span style="background:#a6d96a;width:14px;height:14px;display:inline-block;"></span> $500k - $600k<br>
+        <span style="background:#fee08b;width:14px;height:14px;display:inline-block;"></span> $600k - $700k<br>
+        <span style="background:#fdae61;width:14px;height:14px;display:inline-block;"></span> $700k - $800k<br>
+        <span style="background:#f46d43;width:14px;height:14px;display:inline-block;"></span> $800k - $900k<br>
+        <span style="background:#d73027;width:14px;height:14px;display:inline-block;"></span> $900k - $1M<br>
+        <span style="background:#a50026;width:14px;height:14px;display:inline-block;"></span> $1M+<br><br>
+
+        <b>Border colour = KMeans group</b><br>
+        <span style="border:3px solid #1f77b4;width:14px;height:14px;display:inline-block;"></span> Group 0<br>
+        <span style="border:3px solid #ff7f0e;width:14px;height:14px;display:inline-block;"></span> Group 1<br>
+        <span style="border:3px solid #2ca02c;width:14px;height:14px;display:inline-block;"></span> Group 2<br>
+        <span style="border:3px solid #d62728;width:14px;height:14px;display:inline-block;"></span> Group 3<br>
+        <span style="border:3px solid #9467bd;width:14px;height:14px;display:inline-block;"></span> Group 4<br>
+        <span style="border:3px solid #000000;width:14px;height:14px;display:inline-block;"></span> Group 5<br><br>
+
+        <b>Point size = Land area</b>
+    </div>
+    """
+
+    m.get_root().html.add_child(folium.Element(legend_html))
+
+
 def create_map(df):
     if df.empty:
         raise RuntimeError("No data found from Athena.")
@@ -285,7 +339,7 @@ def create_map(df):
     )
 
     cluster = MarkerCluster(
-        name="Average Property Price Cluster",
+        name="Price + KMeans Property Cluster",
         icon_create_function=cluster_icon_function(),
         options={
             "showCoverageOnHover": False,
@@ -298,7 +352,9 @@ def create_map(df):
 
     for _, row in df.iterrows():
         price = float(row["price"])
-        color = price_color(price)
+
+        fill_color = price_color(price)
+        border_color = kmeans_border_color(row["cluster_group"])
         radius = land_radius(row["land_area"])
 
         popup = f"""
@@ -308,17 +364,17 @@ def create_map(df):
         Bathrooms: {row["bathrooms"]}<br>
         Garage: {row["garage"]}<br>
         Floor area: {row["floor_area"]}<br>
-        KMeans Area Group: {row["cluster_group"]}
+        KMeans Group: {row["cluster_group"]}
         """
 
         marker = folium.CircleMarker(
             location=[row["latitude"], row["longitude"]],
             radius=radius,
-            color=color,
+            color=border_color,
             fill=True,
-            fill_color=color,
-            fill_opacity=0.75,
-            weight=1,
+            fill_color=fill_color,
+            fill_opacity=0.78,
+            weight=4,
             popup=folium.Popup(popup, max_width=300),
         )
 
@@ -331,6 +387,8 @@ def create_map(df):
     )
 
     m.get_root().add_child(area_layer)
+
+    add_legend(m)
 
     folium.LayerControl().add_to(m)
 

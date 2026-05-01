@@ -101,7 +101,7 @@ def upload_to_s3():
             "CacheControl": "no-cache",
         },
     )
-d
+
 def main():
     df = load_data()
 

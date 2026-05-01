@@ -1,3 +1,5 @@
+USE wa_property_db;
+
 CREATE TABLE wa_property_clean
 WITH (
   format = 'PARQUET',

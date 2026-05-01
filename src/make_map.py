@@ -92,19 +92,6 @@ def add_local_price_gap_zones(
     min_price_gap=250000,
     max_pairs=250,
 ):
-    """
-    Finds nearby property pairs where the price difference is unusually large.
-
-    radius_m:
-        Only compare homes within this distance.
-
-    min_price_gap:
-        Minimum price difference required to mark the pair.
-
-    max_pairs:
-        Limits the number of visual lines on the map to keep the HTML lighter.
-    """
-
     work_df = df.dropna(
         subset=["latitude", "longitude", "price", "house_group"]
     ).copy()
@@ -466,6 +453,219 @@ class ClusterAreaLayer(MacroElement):
         """)
 
 
+class DynamicInfoPane(MacroElement):
+    def __init__(self, map_name, price_layer_name, house_layer_name, gap_layer_name):
+        super().__init__()
+        self._name = "DynamicInfoPane"
+        self.map_name = map_name
+        self.price_layer_name = price_layer_name
+        self.house_layer_name = house_layer_name
+        self.gap_layer_name = gap_layer_name
+
+        self._template = Template("""
+        {% macro html(this, kwargs) %}
+
+        <style>
+            #info-pane {
+                position: fixed;
+                top: 80px;
+                left: 20px;
+                width: 330px;
+                max-height: 78vh;
+                overflow-y: auto;
+                z-index: 9999;
+                background: rgba(255, 255, 255, 0.96);
+                border: 2px solid #777;
+                border-radius: 10px;
+                box-shadow: 0 0 12px rgba(0,0,0,0.35);
+                padding: 14px;
+                font-family: Arial, sans-serif;
+                font-size: 13px;
+                line-height: 1.35;
+            }
+
+            #info-pane h3 {
+                margin: 0 0 8px 0;
+                font-size: 17px;
+            }
+
+            #info-pane h4 {
+                margin: 14px 0 6px 0;
+                font-size: 14px;
+            }
+
+            #info-pane .section {
+                display: none;
+                border-top: 1px solid #ddd;
+                padding-top: 10px;
+                margin-top: 10px;
+            }
+
+            #info-pane .legend-row {
+                display: flex;
+                align-items: center;
+                gap: 8px;
+                margin: 5px 0;
+            }
+
+            #info-pane .swatch {
+                width: 18px;
+                height: 14px;
+                border: 1px solid #777;
+                flex: 0 0 auto;
+            }
+
+            #info-pane .line-swatch {
+                width: 26px;
+                height: 4px;
+                background: red;
+                flex: 0 0 auto;
+            }
+
+            #info-pane .small-note {
+                color: #555;
+                font-size: 12px;
+                margin-top: 6px;
+            }
+        </style>
+
+        <div id="info-pane">
+            <h3>Map Guide</h3>
+            <div class="small-note">
+                Toggle layers on the top-right control. This panel updates based on the selected layer.
+            </div>
+
+            <div id="price-info" class="section">
+                <h4>Price View</h4>
+                <p>
+                    This view colours each property and clustered area by property price.
+                    Darker red means more expensive homes. Green means lower-priced homes.
+                </p>
+
+                <div class="legend-row">
+                    <span class="swatch" style="background:#1a9850;"></span>
+                    <span>&lt; $400k — Lower-price properties</span>
+                </div>
+                <div class="legend-row">
+                    <span class="swatch" style="background:#66bd63;"></span>
+                    <span>$400k - $500k</span>
+                </div>
+                <div class="legend-row">
+                    <span class="swatch" style="background:#a6d96a;"></span>
+                    <span>$500k - $600k</span>
+                </div>
+                <div class="legend-row">
+                    <span class="swatch" style="background:#fee08b;"></span>
+                    <span>$600k - $700k</span>
+                </div>
+                <div class="legend-row">
+                    <span class="swatch" style="background:#fdae61;"></span>
+                    <span>$700k - $800k</span>
+                </div>
+                <div class="legend-row">
+                    <span class="swatch" style="background:#f46d43;"></span>
+                    <span>$800k - $900k</span>
+                </div>
+                <div class="legend-row">
+                    <span class="swatch" style="background:#d73027;"></span>
+                    <span>$900k - $1M</span>
+                </div>
+                <div class="legend-row">
+                    <span class="swatch" style="background:#a50026;"></span>
+                    <span>$1M+ — High-price properties</span>
+                </div>
+
+                <p class="small-note">
+                    Circle size still represents land area. Cluster bubbles show the average price of homes inside that cluster.
+                </p>
+            </div>
+
+            <div id="house-info" class="section">
+                <h4>House Classification View</h4>
+                <p>
+                    This view groups homes using KMeans based on location, price, bedrooms, bathrooms,
+                    garage, land area, and floor area. The colours represent interpreted house types.
+                </p>
+
+                <div class="legend-row">
+                    <span class="swatch" style="background:#1f77b4;"></span>
+                    <span><b>Affordable Suburbs</b> — lower-price suburban homes</span>
+                </div>
+                <div class="legend-row">
+                    <span class="swatch" style="background:#ff7f0e;"></span>
+                    <span><b>Family Housing</b> — typical family-oriented homes</span>
+                </div>
+                <div class="legend-row">
+                    <span class="swatch" style="background:#2ca02c;"></span>
+                    <span><b>Premium Housing</b> — higher-price premium properties</span>
+                </div>
+                <div class="legend-row">
+                    <span class="swatch" style="background:#d62728;"></span>
+                    <span><b>Inner-city High Price</b> — compact or central high-price homes</span>
+                </div>
+                <div class="legend-row">
+                    <span class="swatch" style="background:#9467bd;"></span>
+                    <span><b>Large Land Value Homes</b> — homes where land value is relatively important</span>
+                </div>
+                <div class="legend-row">
+                    <span class="swatch" style="background:#000000;"></span>
+                    <span><b>Compact Budget Homes</b> — smaller and more budget-friendly homes</span>
+                </div>
+
+                <p class="small-note">
+                    The group names are interpretation labels. The model only produces numeric clusters;
+                    the names are assigned to make the map easier to understand.
+                </p>
+            </div>
+
+            <div id="gap-info" class="section">
+                <h4>Local Price Gap Zones</h4>
+                <p>
+                    This layer highlights nearby homes with a large price difference.
+                    It is useful for finding possible local price boundaries or transition zones.
+                </p>
+
+                <div class="legend-row">
+                    <span class="line-swatch"></span>
+                    <span>Red line = nearby pair with large price gap</span>
+                </div>
+
+                <div class="legend-row">
+                    <span class="swatch" style="background:red; opacity:0.4; border-radius:50%;"></span>
+                    <span>Red circle = approximate midpoint of the price gap zone</span>
+                </div>
+
+                <p class="small-note">
+                    Current rule: homes within 500m and price difference of at least $250,000.
+                    This is spatial anomaly detection, not supervised classification.
+                </p>
+            </div>
+        </div>
+
+        {% endmacro %}
+
+        {% macro script(this, kwargs) %}
+
+        function updateInfoPane() {
+            var priceVisible = {{ this.map_name }}.hasLayer({{ this.price_layer_name }});
+            var houseVisible = {{ this.map_name }}.hasLayer({{ this.house_layer_name }});
+            var gapVisible = {{ this.map_name }}.hasLayer({{ this.gap_layer_name }});
+
+            document.getElementById("price-info").style.display = priceVisible ? "block" : "none";
+            document.getElementById("house-info").style.display = houseVisible ? "block" : "none";
+            document.getElementById("gap-info").style.display = gapVisible ? "block" : "none";
+        }
+
+        {{ this.map_name }}.on("overlayadd overlayremove", function() {
+            updateInfoPane();
+        });
+
+        setTimeout(updateInfoPane, 500);
+
+        {% endmacro %}
+        """)
+
+
 def popup_html(row):
     price = float(row["price"])
     house_type = house_category_name(row["house_group"])
@@ -481,40 +681,6 @@ def popup_html(row):
     <b>House Type:</b> {house_type}<br>
     <small>{description}</small>
     """
-
-
-def add_legend(m):
-    legend_html = """
-    <div style="
-        position: fixed;
-        bottom: 30px;
-        left: 30px;
-        z-index: 9999;
-        background: white;
-        padding: 12px;
-        border: 2px solid #999;
-        border-radius: 8px;
-        font-size: 13px;
-        box-shadow: 0 0 8px rgba(0,0,0,0.3);
-        max-width: 340px;
-    ">
-        <b>Map Meaning</b><br><br>
-
-        <b>Price View</b><br>
-        Colour and area shade = average price<br><br>
-
-        <b>House Classification View</b><br>
-        Colour and area shade = house type<br><br>
-
-        <b>Local Price Gap Zones</b><br>
-        <span style="background:red;width:20px;height:4px;display:inline-block;"></span>
-        Nearby homes with large price difference<br><br>
-
-        <b>Point Size = Land Area</b>
-    </div>
-    """
-
-    m.get_root().html.add_child(folium.Element(legend_html))
 
 
 def create_map(df, gap_pairs):
@@ -653,10 +819,16 @@ def create_map(df, gap_pairs):
         mode="house",
     )
 
+    info_pane = DynamicInfoPane(
+        map_name=m.get_name(),
+        price_layer_name=price_layer.get_name(),
+        house_layer_name=house_layer.get_name(),
+        gap_layer_name=gap_layer.get_name(),
+    )
+
     m.get_root().add_child(price_area_layer)
     m.get_root().add_child(house_area_layer)
-
-    add_legend(m)
+    m.get_root().add_child(info_pane)
 
     folium.LayerControl(collapsed=False).add_to(m)
 

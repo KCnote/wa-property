@@ -18,7 +18,12 @@ def run_query_file(query_file):
 
     response = athena.start_query_execution(
         QueryString=query,
-        ResultConfiguration={"OutputLocation": OUTPUT},
+        QueryExecutionContext={
+            "Database": DATABASE
+        },
+        ResultConfiguration={
+            "OutputLocation": OUTPUT
+        },
     )
 
     query_id = response["QueryExecutionId"]

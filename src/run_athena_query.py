@@ -9,7 +9,8 @@ OUTPUT = "s3://personal-wa-property-storage-337164669284-ap-southeast-2-an/athen
 
 QUERY_FILES = [
     "sql/00_create_database.sql",
-    "sql/clean_property.sql",
+    "sql/01_create_raw_table.sql",
+    "sql/02_clean_property.sql",
 ]
 
 def run_query_file(query_file):

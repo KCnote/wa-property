@@ -5,6 +5,9 @@ from folium.plugins import MarkerCluster
 from branca.element import MacroElement
 from jinja2 import Template
 
+from sklearn.cluster import KMeans
+from sklearn.preprocessing import StandardScaler
+
 DATABASE = "wa_property_db"
 TABLE = "wa_property_latest"
 
@@ -34,6 +37,15 @@ def load_data():
     WHERE latitude IS NOT NULL
       AND longitude IS NOT NULL
       AND price IS NOT NULL
+      AND bedrooms IS NOT NULL
+      AND bathrooms IS NOT NULL
+      AND garage IS NOT NULL
+      AND land_area IS NOT NULL
+      AND floor_area IS NOT NULL
+      AND bedrooms <= 5
+      AND bathrooms <= 3
+      AND garage <= 2
+      AND land_area BETWEEN 400 AND 800
     """
 
     return wr.athena.read_sql_query(
@@ -41,6 +53,41 @@ def load_data():
         database=DATABASE,
         s3_output=ATHENA_OUTPUT,
     )
+
+
+def add_kmeans_cluster(df, n_clusters=6):
+    features = [
+        "latitude",
+        "longitude",
+        "price",
+        "bedrooms",
+        "bathrooms",
+        "garage",
+        "land_area",
+        "floor_area",
+    ]
+
+    model_df = df.dropna(subset=features).copy()
+
+    if model_df.empty:
+        raise RuntimeError("No valid rows for KMeans clustering.")
+
+    scaler = StandardScaler()
+    X_scaled = scaler.fit_transform(model_df[features])
+
+    kmeans = KMeans(
+        n_clusters=n_clusters,
+        random_state=42,
+        n_init="auto",
+    )
+
+    model_df["cluster_group"] = kmeans.fit_predict(X_scaled)
+
+    df = df.copy()
+    df["cluster_group"] = None
+    df.loc[model_df.index, "cluster_group"] = model_df["cluster_group"]
+
+    return df
 
 
 def price_color(price):
@@ -59,6 +106,22 @@ def price_color(price):
     if price < 1000000:
         return "#d73027"
     return "#a50026"
+
+
+def land_radius(land_area):
+    land_area = float(land_area)
+
+    if land_area < 450:
+        return 4
+    if land_area < 500:
+        return 5
+    if land_area < 600:
+        return 6
+    if land_area < 700:
+        return 7
+    if land_area < 800:
+        return 8
+    return 9
 
 
 def cluster_icon_function():
@@ -94,9 +157,7 @@ def cluster_icon_function():
             var r = (rgb >> 16) & 0xff;
             var g = (rgb >> 8) & 0xff;
             var b = rgb & 0xff;
-
             var brightness = (r * 299 + g * 587 + b * 114) / 1000;
-
             return brightness > 150 ? "black" : "white";
         }
 
@@ -238,29 +299,27 @@ def create_map(df):
     for _, row in df.iterrows():
         price = float(row["price"])
         color = price_color(price)
+        radius = land_radius(row["land_area"])
 
         popup = f"""
         <b>{row["address"]}</b><br>
-        Suburb: {row["suburb"]}<br>
         Price: ${price:,.0f}<br>
         Bedrooms: {row["bedrooms"]}<br>
         Bathrooms: {row["bathrooms"]}<br>
         Garage: {row["garage"]}<br>
-        Land area: {row["land_area"]}<br>
         Floor area: {row["floor_area"]}<br>
-        Sold: {row["date_sold"]}<br>
-        School: {row["nearest_sch"]}<br>
-        School dist: {row["nearest_sch_dist"]}
+        KMeans Area Group: {row["cluster_group"]}
         """
 
         marker = folium.CircleMarker(
             location=[row["latitude"], row["longitude"]],
-            radius=5,
+            radius=radius,
             color=color,
             fill=True,
             fill_color=color,
             fill_opacity=0.75,
-            popup=folium.Popup(popup, max_width=350),
+            weight=1,
+            popup=folium.Popup(popup, max_width=300),
         )
 
         marker.options["price"] = price
@@ -297,6 +356,11 @@ def main():
 
     print("Loaded rows:", len(df))
     print(df.head())
+
+    df = add_kmeans_cluster(df, n_clusters=6)
+
+    print("KMeans cluster counts:")
+    print(df["cluster_group"].value_counts().sort_index())
 
     m = create_map(df)
     m.save(OUTPUT_HTML)

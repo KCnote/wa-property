@@ -27,9 +27,9 @@ OUTPUT_HTML = "index.html"
 # =========================================================
 # Main reason Folium gets heavy: every marker/popup is embedded into one HTML file.
 # Keep this number small for S3 static hosting.
-MAX_MAP_POINTS = 1500
-MAX_UNDERVALUED_MARKERS = 120
-MAX_GAP_PAIRS = 80
+MAX_MAP_POINTS = 2500
+MAX_UNDERVALUED_MARKERS = 150
+MAX_GAP_PAIRS = 100
 
 RANDOM_STATE = 42
 
@@ -307,12 +307,12 @@ def deal_color(row):
 def land_radius(land_area):
     land_area = float(land_area)
     if land_area < 450:
-        return 3
-    if land_area < 550:
         return 4
-    if land_area < 700:
+    if land_area < 550:
         return 5
-    return 6
+    if land_area < 700:
+        return 6
+    return 7
 
 
 def popup_html(row, compact=True):
@@ -333,6 +333,220 @@ def popup_html(row, compact=True):
     Bed/Bath/Garage: {row.get('bedrooms', '')}/{row.get('bathrooms', '')}/{row.get('garage', '')}<br>
     Land: {row.get('land_area', '')} sqm
     """
+
+
+def price_cluster_icon_function():
+    return """
+    function(cluster) {
+        var markers = cluster.getAllChildMarkers();
+        var sum = 0;
+        var count = 0;
+
+        markers.forEach(function(marker) {
+            if (marker.options.price !== undefined && marker.options.price !== null) {
+                sum += Number(marker.options.price);
+                count += 1;
+            }
+        });
+
+        var avg = count > 0 ? sum / count : 0;
+
+        function getColor(price) {
+            if (price < 400000) return "#1a9850";
+            if (price < 500000) return "#66bd63";
+            if (price < 600000) return "#a6d96a";
+            if (price < 700000) return "#fee08b";
+            if (price < 800000) return "#fdae61";
+            if (price < 900000) return "#f46d43";
+            if (price < 1000000) return "#d73027";
+            return "#a50026";
+        }
+
+        var color = getColor(avg);
+        var avgText = "$" + Math.round(avg / 1000) + "k";
+
+        return L.divIcon({
+            html:
+                '<div style="' +
+                'background:' + color + ';' +
+                'color:white;' +
+                'border:3px solid white;' +
+                'border-radius:50%;' +
+                'width:56px;' +
+                'height:56px;' +
+                'display:flex;' +
+                'flex-direction:column;' +
+                'align-items:center;' +
+                'justify-content:center;' +
+                'font-size:12px;' +
+                'font-weight:bold;' +
+                'box-shadow:0 0 6px rgba(0,0,0,0.45);' +
+                '">' +
+                '<div>' + avgText + '</div>' +
+                '<div style="font-size:10px;">' + count + '</div>' +
+                '</div>',
+            className: "price-cluster-icon",
+            iconSize: [56, 56]
+        });
+    }
+    """
+
+
+def house_cluster_icon_function():
+    return """
+    function(cluster) {
+        var markers = cluster.getAllChildMarkers();
+        var counts = {};
+        var total = markers.length;
+
+        markers.forEach(function(marker) {
+            var g = marker.options.houseGroup;
+            counts[g] = (counts[g] || 0) + 1;
+        });
+
+        var majorityGroup = 0;
+        var maxCount = 0;
+
+        Object.keys(counts).forEach(function(g) {
+            if (counts[g] > maxCount) {
+                maxCount = counts[g];
+                majorityGroup = g;
+            }
+        });
+
+        var colors = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd", "#000000"];
+        var color = colors[Number(majorityGroup) % colors.length];
+
+        return L.divIcon({
+            html:
+                '<div style="' +
+                'background:' + color + ';' +
+                'color:white;' +
+                'border:3px solid white;' +
+                'border-radius:50%;' +
+                'width:56px;' +
+                'height:56px;' +
+                'display:flex;' +
+                'flex-direction:column;' +
+                'align-items:center;' +
+                'justify-content:center;' +
+                'font-size:12px;' +
+                'font-weight:bold;' +
+                'box-shadow:0 0 6px rgba(0,0,0,0.45);' +
+                '">' +
+                '<div>Type ' + majorityGroup + '</div>' +
+                '<div style="font-size:10px;">' + total + '</div>' +
+                '</div>',
+            className: "house-cluster-icon",
+            iconSize: [56, 56]
+        });
+    }
+    """
+
+
+class ClusterAreaLayer(MacroElement):
+    """Lightweight coloured rectangle coverage for visible marker clusters.
+
+    This restores the richer colour feel without adding thousands of extra markers.
+    """
+    def __init__(self, map_name, parent_layer_name, cluster_name, mode):
+        super().__init__()
+        self._name = "ClusterAreaLayer"
+        self.map_name = map_name
+        self.parent_layer_name = parent_layer_name
+        self.cluster_name = cluster_name
+        self.mode = mode
+
+        self._template = Template("""
+        {% macro script(this, kwargs) %}
+
+        var areaLayer_{{ this.cluster_name }} = L.layerGroup();
+
+        function getPriceColor_{{ this.cluster_name }}(price) {
+            if (price < 400000) return "#1a9850";
+            if (price < 500000) return "#66bd63";
+            if (price < 600000) return "#a6d96a";
+            if (price < 700000) return "#fee08b";
+            if (price < 800000) return "#fdae61";
+            if (price < 900000) return "#f46d43";
+            if (price < 1000000) return "#d73027";
+            return "#a50026";
+        }
+
+        function getHouseColor_{{ this.cluster_name }}(group) {
+            var colors = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd", "#000000"];
+            return colors[Number(group) % colors.length];
+        }
+
+        function getClusterInfo_{{ this.cluster_name }}(cluster) {
+            var markers = cluster.getAllChildMarkers();
+            var priceSum = 0;
+            var priceCount = 0;
+            var groupCounts = {};
+
+            markers.forEach(function(marker) {
+                if (marker.options.price !== undefined && marker.options.price !== null) {
+                    priceSum += Number(marker.options.price);
+                    priceCount += 1;
+                }
+                var g = marker.options.houseGroup;
+                groupCounts[g] = (groupCounts[g] || 0) + 1;
+            });
+
+            var majorityGroup = 0;
+            var maxCount = 0;
+            Object.keys(groupCounts).forEach(function(g) {
+                if (groupCounts[g] > maxCount) {
+                    maxCount = groupCounts[g];
+                    majorityGroup = g;
+                }
+            });
+
+            return {
+                avgPrice: priceCount > 0 ? priceSum / priceCount : 0,
+                majorityGroup: majorityGroup
+            };
+        }
+
+        function redrawArea_{{ this.cluster_name }}() {
+            areaLayer_{{ this.cluster_name }}.clearLayers();
+
+            if (!{{ this.map_name }}.hasLayer({{ this.parent_layer_name }})) {
+                if ({{ this.map_name }}.hasLayer(areaLayer_{{ this.cluster_name }})) {
+                    {{ this.map_name }}.removeLayer(areaLayer_{{ this.cluster_name }});
+                }
+                return;
+            }
+
+            if (!{{ this.map_name }}.hasLayer(areaLayer_{{ this.cluster_name }})) {
+                areaLayer_{{ this.cluster_name }}.addTo({{ this.map_name }});
+            }
+
+            {{ this.cluster_name }}._featureGroup.eachLayer(function(layer) {
+                if (layer instanceof L.MarkerCluster) {
+                    var info = getClusterInfo_{{ this.cluster_name }}(layer);
+                    var bounds = layer.getBounds();
+                    var color = "{{ this.mode }}" === "price"
+                        ? getPriceColor_{{ this.cluster_name }}(info.avgPrice)
+                        : getHouseColor_{{ this.cluster_name }}(info.majorityGroup);
+
+                    L.rectangle(bounds, {
+                        color: color,
+                        weight: 2,
+                        fillColor: color,
+                        fillOpacity: 0.18,
+                        interactive: false
+                    }).addTo(areaLayer_{{ this.cluster_name }}).bringToBack();
+                }
+            });
+        }
+
+        {{ this.map_name }}.on("zoomend moveend overlayadd overlayremove", redrawArea_{{ this.cluster_name }});
+        {{ this.cluster_name }}.on("animationend", redrawArea_{{ this.cluster_name }});
+        setTimeout(redrawArea_{{ this.cluster_name }}, 700);
+
+        {% endmacro %}
+        """)
 
 
 class LightInfoPane(MacroElement):
@@ -465,35 +679,49 @@ def create_map(df_map, gap_pairs, metrics, total_rows):
         "maxClusterRadius": 110,
     }
 
-    price_cluster = MarkerCluster(name="Price Cluster", options=cluster_options).add_to(price_layer)
-    house_cluster = MarkerCluster(name="House Cluster", options=cluster_options).add_to(house_layer)
+    price_cluster = MarkerCluster(
+        name="Price Cluster",
+        icon_create_function=price_cluster_icon_function(),
+        options=cluster_options,
+    ).add_to(price_layer)
+    house_cluster = MarkerCluster(
+        name="House Cluster",
+        icon_create_function=house_cluster_icon_function(),
+        options=cluster_options,
+    ).add_to(house_layer)
 
     for _, row in df_map.iterrows():
         price = float(row["price"])
         radius = land_radius(row["land_area"])
         html = popup_html(row)
 
-        folium.CircleMarker(
+        price_marker = folium.CircleMarker(
             location=[row["latitude"], row["longitude"]],
             radius=radius,
             color="white",
             fill=True,
             fill_color=price_color(price),
-            fill_opacity=0.75,
+            fill_opacity=0.85,
             weight=1,
             popup=folium.Popup(html, max_width=260),
-        ).add_to(price_cluster)
+        )
+        price_marker.options["price"] = price
+        price_marker.options["houseGroup"] = int(row["house_group"])
+        price_marker.add_to(price_cluster)
 
-        folium.CircleMarker(
+        house_marker = folium.CircleMarker(
             location=[row["latitude"], row["longitude"]],
             radius=radius,
             color="white",
             fill=True,
             fill_color=house_type_color(row["house_group"]),
-            fill_opacity=0.75,
+            fill_opacity=0.85,
             weight=1,
             popup=folium.Popup(html, max_width=260),
-        ).add_to(house_cluster)
+        )
+        house_marker.options["price"] = price
+        house_marker.options["houseGroup"] = int(row["house_group"])
+        house_marker.add_to(house_cluster)
 
     undervalued = (
         df_map.dropna(subset=["prediction_gap"])
@@ -527,6 +755,20 @@ def create_map(df_map, gap_pairs, metrics, total_rows):
             opacity=0.65,
             popup=folium.Popup(line_popup, max_width=260),
         ).add_to(gap_layer)
+
+    # Restore rich-looking colour regions without adding more data points.
+    m.get_root().add_child(ClusterAreaLayer(
+        map_name=m.get_name(),
+        parent_layer_name=price_layer.get_name(),
+        cluster_name=price_cluster.get_name(),
+        mode="price",
+    ))
+    m.get_root().add_child(ClusterAreaLayer(
+        map_name=m.get_name(),
+        parent_layer_name=house_layer.get_name(),
+        cluster_name=house_cluster.get_name(),
+        mode="house",
+    ))
 
     info_pane = LightInfoPane(
         map_name=m.get_name(),

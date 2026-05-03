@@ -297,9 +297,9 @@ def deal_color(row):
     gap_pct = row.get("prediction_gap_pct", np.nan)
     if pd.isna(gap_pct):
         return "#999999"
-    if gap_pct > 0.10:
+    if gap_pct > 0.05:
         return "#1a9850"  # actual price is meaningfully below model estimate
-    if gap_pct < -0.10:
+    if gap_pct < -0.05:
         return "#d73027"  # actual price is meaningfully above model estimate
     return "#2b83ba"
 
@@ -665,9 +665,9 @@ class LightInfoPane(MacroElement):
                 </div>
                 <h4>Top Features</h4>
                 <ol>{feature_html}</ol>
-                <div class="legend-row"><span class="circle-swatch" style="background:#1a9850"></span><span><b>Green</b> — actual price is more than 10% below predicted value</span></div>
+                <div class="legend-row"><span class="circle-swatch" style="background:#1a9850"></span><span><b>Green</b> — actual price is more than 5% below predicted value</span></div>
                 <div class="legend-row"><span class="circle-swatch" style="background:#2b83ba"></span><span><b>Blue</b> — actual price is close to predicted value</span></div>
-                <div class="legend-row"><span class="circle-swatch" style="background:#d73027"></span><span><b>Red</b> — actual price is more than 10% above predicted value</span></div>
+                <div class="legend-row"><span class="circle-swatch" style="background:#d73027"></span><span><b>Red</b> — actual price is more than 5% above predicted value</span></div>
                 <p class="small-note">
                     Positive gap = predicted price is higher than actual price. This can suggest possible undervaluation,
                     but it still needs manual checking against condition, renovation, zoning, and listing details.

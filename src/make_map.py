@@ -570,7 +570,7 @@ class LightInfoPane(MacroElement):
             mae_text = f"${metrics['mae']:,.0f}"
             r2_text = f"{metrics['r2']:.3f}"
             feature_html = "".join(
-                f"<li>{name}: {importance:.3f}</li>"
+                f"<li><b>{name}</b>: {importance:.3f}</li>"
                 for name, importance in metrics.get("features", [])
             )
 
@@ -581,65 +581,109 @@ class LightInfoPane(MacroElement):
                 position: fixed;
                 top: 80px;
                 left: 20px;
-                width: 315px;
+                width: 355px;
                 max-height: 78vh;
                 overflow-y: auto;
                 z-index: 9999;
                 background: rgba(255, 255, 255, 0.96);
-                border: 1px solid #777;
-                border-radius: 9px;
-                box-shadow: 0 0 8px rgba(0,0,0,0.3);
-                padding: 12px;
+                border: 1px solid #666;
+                border-radius: 10px;
+                box-shadow: 0 0 10px rgba(0,0,0,0.32);
+                padding: 13px;
                 font-family: Arial, sans-serif;
                 font-size: 13px;
                 line-height: 1.35;
             }}
-            #info-pane h3 {{ margin: 0 0 8px 0; font-size: 16px; }}
-            #info-pane h4 {{ margin: 12px 0 5px 0; font-size: 14px; }}
-            #info-pane .section {{ display: none; border-top: 1px solid #ddd; padding-top: 8px; margin-top: 8px; }}
-            #info-pane .legend-row {{ display:flex; align-items:center; gap:8px; margin:4px 0; }}
-            #info-pane .swatch {{ width:16px; height:13px; border:1px solid #777; flex:0 0 auto; }}
+            #info-pane h3 {{ margin: 0 0 8px 0; font-size: 17px; }}
+            #info-pane h4 {{ margin: 13px 0 6px 0; font-size: 14px; }}
+            #info-pane p {{ margin: 6px 0; }}
+            #info-pane .section {{ display: none; border-top: 1px solid #ddd; padding-top: 8px; margin-top: 9px; }}
+            #info-pane .legend-row {{ display:flex; align-items:center; gap:8px; margin:5px 0; }}
+            #info-pane .swatch {{ width:18px; height:14px; border:1px solid #777; flex:0 0 auto; }}
+            #info-pane .circle-swatch {{ width:14px; height:14px; border-radius:50%; border:1px solid #777; flex:0 0 auto; }}
+            #info-pane .line-swatch {{ width:28px; height:4px; background:red; flex:0 0 auto; }}
             #info-pane .small-note {{ color:#555; font-size:12px; }}
+            #info-pane .metric-box {{ background:#f7f7f7; border:1px solid #ddd; border-radius:7px; padding:7px; margin:6px 0; }}
+            #info-pane ol {{ padding-left: 20px; margin: 6px 0; }}
         </style>
 
         <div id="info-pane">
-            <h3>WA Property Map</h3>
+            <h3>WA Property Map Guide</h3>
             <div class="small-note">
                 Loaded rows: {self.total_rows:,}<br>
                 Displayed map points: {self.map_rows:,}<br>
-                OpenStreetMap base tiles + original strong price colours. Points are sampled to keep the HTML small.
+                The map uses sampled points to keep the static HTML light, but keeps the original colour interpretation.
             </div>
 
             <div id="price-info" class="section">
                 <h4>Price View</h4>
-                <p>Properties are coloured by actual sold price.</p>
-                <div class="legend-row"><span class="swatch" style="background:#1a9850"></span>&lt; $400k</div>
-                <div class="legend-row"><span class="swatch" style="background:#fee08b"></span>$600k - $700k</div>
-                <div class="legend-row"><span class="swatch" style="background:#d73027"></span>$900k - $1M</div>
-                <div class="legend-row"><span class="swatch" style="background:#a50026"></span>$1M+</div>
+                <p>
+                    This layer shows actual sold prices. Each property point and cluster area is coloured by price band.
+                    Cluster bubbles show the average price of properties inside that cluster.
+                </p>
+                <div class="legend-row"><span class="swatch" style="background:#1a9850"></span><span><b>&lt; $400k</b> — lowest price band / affordable stock</span></div>
+                <div class="legend-row"><span class="swatch" style="background:#66bd63"></span><span><b>$400k - $500k</b> — lower-mid price band</span></div>
+                <div class="legend-row"><span class="swatch" style="background:#a6d96a"></span><span><b>$500k - $600k</b> — mid price band</span></div>
+                <div class="legend-row"><span class="swatch" style="background:#fee08b"></span><span><b>$600k - $700k</b> — typical family-home range</span></div>
+                <div class="legend-row"><span class="swatch" style="background:#fdae61"></span><span><b>$700k - $800k</b> — upper-mid price band</span></div>
+                <div class="legend-row"><span class="swatch" style="background:#f46d43"></span><span><b>$800k - $900k</b> — expensive properties</span></div>
+                <div class="legend-row"><span class="swatch" style="background:#d73027"></span><span><b>$900k - $1M</b> — high-price properties</span></div>
+                <div class="legend-row"><span class="swatch" style="background:#a50026"></span><span><b>$1M+</b> — premium/high-end properties</span></div>
+                <p class="small-note">
+                    Circle size roughly follows land area. Larger circles generally indicate larger land parcels.
+                </p>
             </div>
 
             <div id="house-info" class="section">
-                <h4>House Classification</h4>
-                <p>MiniBatchKMeans groups homes by location, price, bedrooms, bathrooms, garage, land area, and floor area.</p>
+                <h4>House Classification View</h4>
+                <p>
+                    This layer uses MiniBatchKMeans to group similar homes. The model considers location, price,
+                    bedrooms, bathrooms, garage, land area, and floor area. The group names below are human-friendly
+                    interpretation labels, not labels learned directly by the model.
+                </p>
+                <div class="legend-row"><span class="swatch" style="background:#1f77b4"></span><span><b>Type 0 — Affordable Suburbs</b><br><span class="small-note">Lower-price suburban homes or budget-friendly areas.</span></span></div>
+                <div class="legend-row"><span class="swatch" style="background:#ff7f0e"></span><span><b>Type 1 — Family Housing</b><br><span class="small-note">Typical family-oriented homes with balanced land and building size.</span></span></div>
+                <div class="legend-row"><span class="swatch" style="background:#2ca02c"></span><span><b>Type 2 — Premium Housing</b><br><span class="small-note">Higher-price homes with stronger location or property attributes.</span></span></div>
+                <div class="legend-row"><span class="swatch" style="background:#d62728"></span><span><b>Type 3 — Inner-city High Price</b><br><span class="small-note">Compact or central homes where location can dominate price.</span></span></div>
+                <div class="legend-row"><span class="swatch" style="background:#9467bd"></span><span><b>Type 4 — Large Land Value Homes</b><br><span class="small-note">Homes where land size/value appears relatively important.</span></span></div>
+                <div class="legend-row"><span class="swatch" style="background:#000000"></span><span><b>Type 5 — Compact Budget Homes</b><br><span class="small-note">Smaller and more budget-friendly homes.</span></span></div>
+                <p class="small-note">
+                    Because KMeans is unsupervised, these groups are best used as exploration hints, not final property categories.
+                </p>
             </div>
 
             <div id="deal-info" class="section">
                 <h4>Random Forest Valuation</h4>
-                <p>Random Forest predicts price from property attributes and location. The layer highlights top undervalued candidates only.</p>
-                <b>Model metrics</b><br>
-                MAE: {mae_text}<br>
-                R²: {r2_text}<br>
-                <h4>Top features</h4>
+                <p>
+                    Random Forest predicts a reasonable price from property attributes and location.
+                    This layer highlights only the strongest undervalued candidates to avoid making the HTML too large.
+                </p>
+                <div class="metric-box">
+                    <b>Model metrics</b><br>
+                    MAE: {mae_text}<br>
+                    R²: {r2_text}
+                </div>
+                <h4>Top Features</h4>
                 <ol>{feature_html}</ol>
-                <div class="legend-row"><span class="swatch" style="background:#1a9850"></span>Actual price &gt;10% below prediction</div>
-                <div class="legend-row"><span class="swatch" style="background:#2b83ba"></span>Near predicted value</div>
-                <div class="legend-row"><span class="swatch" style="background:#d73027"></span>Actual price &gt;10% above prediction</div>
+                <div class="legend-row"><span class="circle-swatch" style="background:#1a9850"></span><span><b>Green</b> — actual price is more than 10% below predicted value</span></div>
+                <div class="legend-row"><span class="circle-swatch" style="background:#2b83ba"></span><span><b>Blue</b> — actual price is close to predicted value</span></div>
+                <div class="legend-row"><span class="circle-swatch" style="background:#d73027"></span><span><b>Red</b> — actual price is more than 10% above predicted value</span></div>
+                <p class="small-note">
+                    Positive gap = predicted price is higher than actual price. This can suggest possible undervaluation,
+                    but it still needs manual checking against condition, renovation, zoning, and listing details.
+                </p>
             </div>
 
             <div id="gap-info" class="section">
                 <h4>Local Price Gap Zones</h4>
-                <p>Only the largest nearby price gaps are shown to reduce file size.</p>
+                <p>
+                    This layer highlights nearby homes with large price differences. It is useful for spotting local price boundaries,
+                    transition zones, or areas where suburb/street-level factors may strongly affect value.
+                </p>
+                <div class="legend-row"><span class="line-swatch"></span><span><b>Red line</b> — nearby pair with a large price gap</span></div>
+                <p class="small-note">
+                    Current rule: within 500m and at least $250k difference. Only top gap pairs are shown to keep the map light.
+                </p>
             </div>
         </div>
         {{% endmacro %}}
@@ -655,7 +699,6 @@ class LightInfoPane(MacroElement):
         setTimeout(updateInfoPane, 500);
         {{% endmacro %}}
         """)
-
 
 def create_map(df_map, gap_pairs, metrics, total_rows):
     if df_map.empty:

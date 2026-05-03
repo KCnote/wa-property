@@ -10,6 +10,7 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.neighbors import BallTree
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.model_selection import train_test_split
+from sklearn.decomposition import PCA
 from sklearn.metrics import mean_absolute_error, r2_score
 
 import numpy as np
@@ -190,6 +191,45 @@ def add_kmeans_cluster(df, n_clusters=6):
     return df
 
 
+def add_pca_features(df):
+    """Add PCA scores for visual similarity analysis.
+
+    PCA is used here for exploration, not price prediction. It compresses
+    the main property attributes into two scores so similar homes can be
+    coloured in a continuous way on the map.
+    """
+    features = [
+        "price", "bedrooms", "bathrooms", "garage", "land_area", "floor_area", "latitude", "longitude",
+    ]
+
+    model_df = df.dropna(subset=features).copy()
+
+    df = df.copy()
+    df["pca1"] = np.nan
+    df["pca2"] = np.nan
+    df["pca_score"] = np.nan
+
+    if len(model_df) < 10:
+        return df, {"explained_variance": []}
+
+    scaler = StandardScaler()
+    X_scaled = scaler.fit_transform(model_df[features])
+
+    pca = PCA(n_components=2)
+    X_pca = pca.fit_transform(X_scaled)
+
+    model_df["pca1"] = X_pca[:, 0]
+    model_df["pca2"] = X_pca[:, 1]
+    model_df["pca_score"] = model_df["pca1"] + model_df["pca2"]
+
+    df.loc[model_df.index, ["pca1", "pca2", "pca_score"]] = model_df[["pca1", "pca2", "pca_score"]]
+
+    return df, {
+        "explained_variance": [float(v) for v in pca.explained_variance_ratio_],
+        "features": features,
+    }
+
+
 def select_map_points(df):
     """Keep the HTML small while preserving useful points.
 
@@ -293,13 +333,28 @@ def house_type_color(group):
     return colors[int(group) % len(colors)]
 
 
+def pca_color(score):
+    if pd.isna(score):
+        return "#999999"
+    score = float(score)
+    if score < -2.0:
+        return "#2c7bb6"
+    if score < -0.8:
+        return "#00a6ca"
+    if score < 0.8:
+        return "#ffffbf"
+    if score < 2.0:
+        return "#fdae61"
+    return "#d7191c"
+
+
 def deal_color(row):
     gap_pct = row.get("prediction_gap_pct", np.nan)
     if pd.isna(gap_pct):
         return "#999999"
-    if gap_pct > 0.05:
+    if gap_pct > 0.10:
         return "#1a9850"  # actual price is meaningfully below model estimate
-    if gap_pct < -0.05:
+    if gap_pct < -0.10:
         return "#d73027"  # actual price is meaningfully above model estimate
     return "#2b83ba"
 
@@ -550,15 +605,17 @@ class ClusterAreaLayer(MacroElement):
 
 
 class LightInfoPane(MacroElement):
-    def __init__(self, map_name, price_layer_name, house_layer_name, deal_layer_name, gap_layer_name, metrics, total_rows, map_rows):
+    def __init__(self, map_name, price_layer_name, house_layer_name, pca_layer_name, deal_layer_name, gap_layer_name, metrics, pca_metrics, total_rows, map_rows):
         super().__init__()
         self._name = "LightInfoPane"
         self.map_name = map_name
         self.price_layer_name = price_layer_name
         self.house_layer_name = house_layer_name
+        self.pca_layer_name = pca_layer_name
         self.deal_layer_name = deal_layer_name
         self.gap_layer_name = gap_layer_name
         self.metrics = metrics
+        self.pca_metrics = pca_metrics
         self.total_rows = total_rows
         self.map_rows = map_rows
 
@@ -573,6 +630,12 @@ class LightInfoPane(MacroElement):
                 f"<li><b>{name}</b>: {importance:.3f}</li>"
                 for name, importance in metrics.get("features", [])
             )
+
+        pca_ev = pca_metrics.get("explained_variance", []) if pca_metrics else []
+        if len(pca_ev) >= 2:
+            pca_text = f"PC1 explains {pca_ev[0] * 100:.1f}% and PC2 explains {pca_ev[1] * 100:.1f}% of the scaled feature variance."
+        else:
+            pca_text = "PCA metrics are not available."
 
         self._template = Template(f"""
         {{% macro html(this, kwargs) %}}
@@ -652,6 +715,27 @@ class LightInfoPane(MacroElement):
                 </p>
             </div>
 
+            <div id="pca-info" class="section">
+                <h4>PCA Similarity View</h4>
+                <p>
+                    PCA compresses price, size, room count, and location features into two main components.
+                    It does not predict price; it shows overall property similarity.
+                </p>
+                <div class="metric-box">
+                    <b>PCA summary</b><br>
+                    {pca_text}
+                </div>
+                <div class="legend-row"><span class="swatch" style="background:#2c7bb6"></span><span><b>Deep blue</b> — lower PCA score band</span></div>
+                <div class="legend-row"><span class="swatch" style="background:#00a6ca"></span><span><b>Blue</b> — lower-mid similarity band</span></div>
+                <div class="legend-row"><span class="swatch" style="background:#ffffbf"></span><span><b>Yellow</b> — middle similarity band</span></div>
+                <div class="legend-row"><span class="swatch" style="background:#fdae61"></span><span><b>Orange</b> — upper-mid similarity band</span></div>
+                <div class="legend-row"><span class="swatch" style="background:#d7191c"></span><span><b>Red</b> — higher PCA score band</span></div>
+                <p class="small-note">
+                    Use this as an exploratory layer. Nearby homes with similar colours have similar overall feature profiles.
+                    Sudden colour changes can reveal different house types or unusual local properties.
+                </p>
+            </div>
+
             <div id="deal-info" class="section">
                 <h4>Random Forest Valuation</h4>
                 <p>
@@ -665,9 +749,9 @@ class LightInfoPane(MacroElement):
                 </div>
                 <h4>Top Features</h4>
                 <ol>{feature_html}</ol>
-                <div class="legend-row"><span class="circle-swatch" style="background:#1a9850"></span><span><b>Green</b> — actual price is more than 5% below predicted value</span></div>
+                <div class="legend-row"><span class="circle-swatch" style="background:#1a9850"></span><span><b>Green</b> — actual price is more than 10% below predicted value</span></div>
                 <div class="legend-row"><span class="circle-swatch" style="background:#2b83ba"></span><span><b>Blue</b> — actual price is close to predicted value</span></div>
-                <div class="legend-row"><span class="circle-swatch" style="background:#d73027"></span><span><b>Red</b> — actual price is more than 5% above predicted value</span></div>
+                <div class="legend-row"><span class="circle-swatch" style="background:#d73027"></span><span><b>Red</b> — actual price is more than 10% above predicted value</span></div>
                 <p class="small-note">
                     Positive gap = predicted price is higher than actual price. This can suggest possible undervaluation,
                     but it still needs manual checking against condition, renovation, zoning, and listing details.
@@ -692,6 +776,7 @@ class LightInfoPane(MacroElement):
         function updateInfoPane() {{
             document.getElementById("price-info").style.display = {self.map_name}.hasLayer({self.price_layer_name}) ? "block" : "none";
             document.getElementById("house-info").style.display = {self.map_name}.hasLayer({self.house_layer_name}) ? "block" : "none";
+            document.getElementById("pca-info").style.display = {self.map_name}.hasLayer({self.pca_layer_name}) ? "block" : "none";
             document.getElementById("deal-info").style.display = {self.map_name}.hasLayer({self.deal_layer_name}) ? "block" : "none";
             document.getElementById("gap-info").style.display = {self.map_name}.hasLayer({self.gap_layer_name}) ? "block" : "none";
         }}
@@ -700,7 +785,7 @@ class LightInfoPane(MacroElement):
         {{% endmacro %}}
         """)
 
-def create_map(df_map, gap_pairs, metrics, total_rows):
+def create_map(df_map, gap_pairs, metrics, pca_metrics, total_rows):
     if df_map.empty:
         raise RuntimeError("No data found from Athena.")
 
@@ -711,6 +796,7 @@ def create_map(df_map, gap_pairs, metrics, total_rows):
 
     price_layer = folium.FeatureGroup(name="Price View", show=True).add_to(m)
     house_layer = folium.FeatureGroup(name="House Classification View", show=False).add_to(m)
+    pca_layer = folium.FeatureGroup(name="PCA Similarity View", show=False).add_to(m)
     deal_layer = folium.FeatureGroup(name="RF Undervalued Candidates", show=False).add_to(m)
     gap_layer = folium.FeatureGroup(name="Local Price Gap Zones", show=False).add_to(m)
 
@@ -732,6 +818,10 @@ def create_map(df_map, gap_pairs, metrics, total_rows):
         icon_create_function=house_cluster_icon_function(),
         options=cluster_options,
     ).add_to(house_layer)
+    pca_cluster = MarkerCluster(
+        name="PCA Similarity Cluster",
+        options=cluster_options,
+    ).add_to(pca_layer)
 
     for _, row in df_map.iterrows():
         price = float(row["price"])
@@ -765,6 +855,18 @@ def create_map(df_map, gap_pairs, metrics, total_rows):
         house_marker.options["price"] = price
         house_marker.options["houseGroup"] = int(row["house_group"])
         house_marker.add_to(house_cluster)
+
+        pca_marker = folium.CircleMarker(
+            location=[row["latitude"], row["longitude"]],
+            radius=radius + 1,
+            color="#222222",
+            fill=True,
+            fill_color=pca_color(row.get("pca_score", np.nan)),
+            fill_opacity=0.95,
+            weight=1,
+            popup=folium.Popup(html, max_width=260),
+        )
+        pca_marker.add_to(pca_cluster)
 
     undervalued = (
         df_map.dropna(subset=["prediction_gap"])
@@ -817,9 +919,11 @@ def create_map(df_map, gap_pairs, metrics, total_rows):
         map_name=m.get_name(),
         price_layer_name=price_layer.get_name(),
         house_layer_name=house_layer.get_name(),
+        pca_layer_name=pca_layer.get_name(),
         deal_layer_name=deal_layer.get_name(),
         gap_layer_name=gap_layer.get_name(),
         metrics=metrics,
+        pca_metrics=pca_metrics,
         total_rows=total_rows,
         map_rows=len(df_map),
     )
@@ -853,6 +957,8 @@ def main():
     print("Random Forest metrics:", metrics)
 
     df = add_kmeans_cluster(df, n_clusters=6)
+    df, pca_metrics = add_pca_features(df)
+    print("PCA metrics:", pca_metrics)
 
     df_map = select_map_points(df)
     print("Displayed map rows:", len(df_map))
@@ -865,7 +971,7 @@ def main():
     )
     print("Displayed local price gap pairs:", len(gap_pairs))
 
-    m = create_map(df_map, gap_pairs, metrics, total_rows)
+    m = create_map(df_map, gap_pairs, metrics, pca_metrics, total_rows)
     m.save(OUTPUT_HTML)
 
     print(f"Generated {OUTPUT_HTML}")

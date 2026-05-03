@@ -27,7 +27,7 @@ OUTPUT_HTML = "index.html"
 # =========================================================
 # Main reason Folium gets heavy: every marker/popup is embedded into one HTML file.
 # Keep this number small for S3 static hosting.
-MAX_MAP_POINTS = 2500
+MAX_MAP_POINTS = 3000
 MAX_UNDERVALUED_MARKERS = 150
 MAX_GAP_PAIRS = 100
 
@@ -372,8 +372,8 @@ def price_cluster_icon_function():
                 'color:white;' +
                 'border:3px solid white;' +
                 'border-radius:50%;' +
-                'width:56px;' +
-                'height:56px;' +
+                'width:58px;' +
+                'height:58px;' +
                 'display:flex;' +
                 'flex-direction:column;' +
                 'align-items:center;' +
@@ -386,7 +386,7 @@ def price_cluster_icon_function():
                 '<div style="font-size:10px;">' + count + '</div>' +
                 '</div>',
             className: "price-cluster-icon",
-            iconSize: [56, 56]
+            iconSize: [58, 58]
         });
     }
     """
@@ -424,8 +424,8 @@ def house_cluster_icon_function():
                 'color:white;' +
                 'border:3px solid white;' +
                 'border-radius:50%;' +
-                'width:56px;' +
-                'height:56px;' +
+                'width:58px;' +
+                'height:58px;' +
                 'display:flex;' +
                 'flex-direction:column;' +
                 'align-items:center;' +
@@ -438,7 +438,7 @@ def house_cluster_icon_function():
                 '<div style="font-size:10px;">' + total + '</div>' +
                 '</div>',
             className: "house-cluster-icon",
-            iconSize: [56, 56]
+            iconSize: [58, 58]
         });
     }
     """
@@ -532,9 +532,9 @@ class ClusterAreaLayer(MacroElement):
 
                     L.rectangle(bounds, {
                         color: color,
-                        weight: 2,
+                        weight: 3,
                         fillColor: color,
-                        fillOpacity: 0.18,
+                        fillOpacity: 0.26,
                         interactive: false
                     }).addTo(areaLayer_{{ this.cluster_name }}).bringToBack();
                 }
@@ -607,7 +607,7 @@ class LightInfoPane(MacroElement):
             <div class="small-note">
                 Loaded rows: {self.total_rows:,}<br>
                 Displayed map points: {self.map_rows:,}<br>
-                This lightweight version samples points to keep the HTML small.
+                OpenStreetMap base tiles + original strong price colours. Points are sampled to keep the HTML small.
             </div>
 
             <div id="price-info" class="section">
@@ -664,7 +664,7 @@ def create_map(df_map, gap_pairs, metrics, total_rows):
     center_lat = df_map["latitude"].mean()
     center_lon = df_map["longitude"].mean()
 
-    m = folium.Map(location=[center_lat, center_lon], zoom_start=10, tiles="CartoDB positron")
+    m = folium.Map(location=[center_lat, center_lon], zoom_start=10, tiles="OpenStreetMap")
 
     price_layer = folium.FeatureGroup(name="Price View", show=True).add_to(m)
     house_layer = folium.FeatureGroup(name="House Classification View", show=False).add_to(m)
@@ -697,11 +697,11 @@ def create_map(df_map, gap_pairs, metrics, total_rows):
 
         price_marker = folium.CircleMarker(
             location=[row["latitude"], row["longitude"]],
-            radius=radius,
-            color="white",
+            radius=radius + 1,
+            color="#222222",
             fill=True,
             fill_color=price_color(price),
-            fill_opacity=0.85,
+            fill_opacity=0.95,
             weight=1,
             popup=folium.Popup(html, max_width=260),
         )
@@ -711,11 +711,11 @@ def create_map(df_map, gap_pairs, metrics, total_rows):
 
         house_marker = folium.CircleMarker(
             location=[row["latitude"], row["longitude"]],
-            radius=radius,
-            color="white",
+            radius=radius + 1,
+            color="#222222",
             fill=True,
             fill_color=house_type_color(row["house_group"]),
-            fill_opacity=0.85,
+            fill_opacity=0.95,
             weight=1,
             popup=folium.Popup(html, max_width=260),
         )

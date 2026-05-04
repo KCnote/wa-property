@@ -15,6 +15,7 @@ from sklearn.metrics import mean_absolute_error, r2_score
 
 import numpy as np
 import pandas as pd
+import json
 
 DATABASE = "wa_property_db"
 TABLE = "wa_property_latest"
@@ -28,7 +29,7 @@ OUTPUT_HTML = "index.html"
 # =========================================================
 # Main reason Folium gets heavy: every marker/popup is embedded into one HTML file.
 # Keep this number small for S3 static hosting.
-MAX_MAP_POINTS = 3000
+MAX_MAP_POINTS = 1800
 MAX_UNDERVALUED_MARKERS = 150
 MAX_GAP_PAIRS = 100
 
@@ -828,41 +829,98 @@ class LightInfoPane(MacroElement):
         """)
 
 
-class ZoomLabelController(MacroElement):
-    """Show price labels only when the selected layer is zoomed in enough.
+class ViewportPriceLabelController(MacroElement):
+    """Render price labels only for homes inside the current viewport.
 
-    This prevents thousands of labels from being visible while markers are clustered,
-    which keeps the browser much smoother.
+    Important: this is real viewport-based rendering for labels.
+    The browser does not create thousands of label DOM nodes at page load.
+    Labels are created only when:
+      1. zoom >= zoom_threshold
+      2. the related view layer is enabled
+      3. the property point is inside the current map bounds
     """
-    def __init__(self, map_name, zoom_threshold, layer_pairs):
+    def __init__(self, map_name, zoom_threshold, label_data, watched_layers):
         super().__init__()
-        self._name = "ZoomLabelController"
+        self._name = "ViewportPriceLabelController"
         self.map_name = map_name
         self.zoom_threshold = zoom_threshold
-        self.layer_pairs = layer_pairs
+        self.label_data_json = json.dumps(label_data, separators=(",", ":"))
+        self.watched_layers = watched_layers
 
-        rules_js = "\n".join(
-            f"""
-            if ({self.map_name}.hasLayer({parent}) && shouldShowLabels) {{
-                if (!{self.map_name}.hasLayer({labels})) {{ {labels}.addTo({self.map_name}); }}
-            }} else {{
-                if ({self.map_name}.hasLayer({labels})) {{ {self.map_name}.removeLayer({labels}); }}
-            }}
-            """
-            for parent, labels in layer_pairs
+        active_layer_conditions = " || ".join(
+            f"{self.map_name}.hasLayer({layer_name})" for layer_name in watched_layers
         )
 
         self._template = Template(f"""
         {{% macro script(this, kwargs) %}}
-        function updateZoomLabels() {{
-            var shouldShowLabels = {self.map_name}.getZoom() >= {self.zoom_threshold};
-            {rules_js}
+        var viewportPriceLabels = L.layerGroup();
+        var viewportPriceLabelData = {self.label_data_json};
+        var viewportPriceLabelTimer = null;
+        var viewportPriceLabelMaxVisible = 450;
+
+        function makePriceLabelIcon(text) {{
+            return L.divIcon({{
+                className: "viewport-price-label",
+                html:
+                    '<div style="' +
+                    'font-size:11px;' +
+                    'font-weight:bold;' +
+                    'color:#111;' +
+                    'background:rgba(255,255,255,0.88);' +
+                    'border:1px solid #555;' +
+                    'border-radius:4px;' +
+                    'padding:1px 4px;' +
+                    'white-space:nowrap;' +
+                    'transform:translate(-50%, -28px);' +
+                    'box-shadow:0 1px 3px rgba(0,0,0,0.35);' +
+                    'pointer-events:none;' +
+                    '">' + text + '</div>',
+                iconSize: [0, 0]
+            }});
         }}
 
-        {self.map_name}.on("zoomend overlayadd overlayremove", updateZoomLabels);
-        setTimeout(updateZoomLabels, 600);
+        function redrawViewportPriceLabels() {{
+            viewportPriceLabels.clearLayers();
+
+            var activeViewLayer = {active_layer_conditions};
+            var shouldShow = {self.map_name}.getZoom() >= {self.zoom_threshold} && activeViewLayer;
+
+            if (!shouldShow) {{
+                if ({self.map_name}.hasLayer(viewportPriceLabels)) {{
+                    {self.map_name}.removeLayer(viewportPriceLabels);
+                }}
+                return;
+            }}
+
+            if (!{self.map_name}.hasLayer(viewportPriceLabels)) {{
+                viewportPriceLabels.addTo({self.map_name});
+            }}
+
+            var bounds = {self.map_name}.getBounds().pad(0.08);
+            var added = 0;
+
+            for (var i = 0; i < viewportPriceLabelData.length; i++) {{
+                var item = viewportPriceLabelData[i];
+                var latlng = L.latLng(item[0], item[1]);
+                if (bounds.contains(latlng)) {{
+                    L.marker(latlng, {{ icon: makePriceLabelIcon(item[2]), interactive: false }})
+                        .addTo(viewportPriceLabels);
+                    added += 1;
+                    if (added >= viewportPriceLabelMaxVisible) break;
+                }}
+            }}
+        }}
+
+        function scheduleViewportPriceLabels() {{
+            if (viewportPriceLabelTimer) clearTimeout(viewportPriceLabelTimer);
+            viewportPriceLabelTimer = setTimeout(redrawViewportPriceLabels, 120);
+        }}
+
+        {self.map_name}.on("zoomend moveend overlayadd overlayremove", scheduleViewportPriceLabels);
+        setTimeout(redrawViewportPriceLabels, 700);
         {{% endmacro %}}
         """)
+
 
 def create_map(df_map, gap_pairs, metrics, pca_metrics, total_rows):
     if df_map.empty:
@@ -903,12 +961,6 @@ def create_map(df_map, gap_pairs, metrics, pca_metrics, total_rows):
         name="PCA Similarity Cluster",
         options=cluster_options,
     ).add_to(pca_layer)
-
-    # Price labels are separate from marker clusters.
-    # They are hidden at low zoom and only displayed when clusters split into individual homes.
-    price_label_layer = folium.FeatureGroup(name="Price Labels", show=False, control=False).add_to(m)
-    house_label_layer = folium.FeatureGroup(name="House Labels", show=False, control=False).add_to(m)
-    pca_label_layer = folium.FeatureGroup(name="PCA Labels", show=False, control=False).add_to(m)
 
     for _, row in df_map.iterrows():
         price = float(row["price"])
@@ -954,11 +1006,6 @@ def create_map(df_map, gap_pairs, metrics, pca_metrics, total_rows):
             popup=folium.Popup(html, max_width=260),
         )
         pca_marker.add_to(pca_cluster)
-
-        # Price labels are hidden by default and are shown only at high zoom.
-        price_label_marker(row).add_to(price_label_layer)
-        price_label_marker(row).add_to(house_label_layer)
-        price_label_marker(row).add_to(pca_label_layer)
 
     undervalued = (
         df_map.dropna(subset=["prediction_gap"])
@@ -1021,13 +1068,19 @@ def create_map(df_map, gap_pairs, metrics, pca_metrics, total_rows):
     )
     m.get_root().add_child(info_pane)
 
-    m.get_root().add_child(ZoomLabelController(
+    label_data = [
+        [float(row["latitude"]), float(row["longitude"]), format_price_label(row["price"])]
+        for _, row in df_map.dropna(subset=["latitude", "longitude", "price"]).iterrows()
+    ]
+
+    m.get_root().add_child(ViewportPriceLabelController(
         map_name=m.get_name(),
         zoom_threshold=LABEL_ZOOM_THRESHOLD,
-        layer_pairs=[
-            (price_layer.get_name(), price_label_layer.get_name()),
-            (house_layer.get_name(), house_label_layer.get_name()),
-            (pca_layer.get_name(), pca_label_layer.get_name()),
+        label_data=label_data,
+        watched_layers=[
+            price_layer.get_name(),
+            house_layer.get_name(),
+            pca_layer.get_name(),
         ],
     ))
 

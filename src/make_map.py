@@ -761,21 +761,44 @@ class LightInfoPane(MacroElement):
             <div id="pca-info" class="section">
                 <h4>PCA Similarity View</h4>
                 <p>
-                    PCA compresses price, size, room count, and location features into two main components.
-                    It does not predict price; it shows overall property similarity.
+                    PCA compresses price, size, room count, land/building size, and location into two main components.
+                    It does not predict price; it shows overall property similarity and market profile.
                 </p>
                 <div class="metric-box">
                     <b>PCA summary</b><br>
                     {pca_text}
                 </div>
-                <div class="legend-row"><span class="swatch" style="background:#2c7bb6"></span><span><b>Deep blue</b> — lower PCA score band</span></div>
-                <div class="legend-row"><span class="swatch" style="background:#00a6ca"></span><span><b>Blue</b> — lower-mid similarity band</span></div>
-                <div class="legend-row"><span class="swatch" style="background:#ffffbf"></span><span><b>Yellow</b> — middle similarity band</span></div>
-                <div class="legend-row"><span class="swatch" style="background:#fdae61"></span><span><b>Orange</b> — upper-mid similarity band</span></div>
-                <div class="legend-row"><span class="swatch" style="background:#d7191c"></span><span><b>Red</b> — higher PCA score band</span></div>
+
+                <h4>PCA Colour Meaning</h4>
+                <div class="legend-row">
+                    <span class="swatch" style="background:#2c7bb6"></span>
+                    <span><b>Deep Blue — Very Low PCA Score</b><br>
+                    <span class="small-note">Budget / entry-level profile. Usually lower price, smaller home size, fewer rooms, or less premium location.</span></span>
+                </div>
+                <div class="legend-row">
+                    <span class="swatch" style="background:#00a6ca"></span>
+                    <span><b>Blue — Low PCA Score</b><br>
+                    <span class="small-note">Lower-mid suburban profile. Still relatively affordable, but generally more balanced than the deepest blue group.</span></span>
+                </div>
+                <div class="legend-row">
+                    <span class="swatch" style="background:#ffffbf"></span>
+                    <span><b>Yellow — Average PCA Score</b><br>
+                    <span class="small-note">Typical market baseline. Balanced price, size, rooms, land, and location features.</span></span>
+                </div>
+                <div class="legend-row">
+                    <span class="swatch" style="background:#fdae61"></span>
+                    <span><b>Orange — High PCA Score</b><br>
+                    <span class="small-note">Upper-mid / stronger property profile. Often higher price, larger floor area/land, more rooms, or better location.</span></span>
+                </div>
+                <div class="legend-row">
+                    <span class="swatch" style="background:#d7191c"></span>
+                    <span><b>Red — Very High PCA Score</b><br>
+                    <span class="small-note">Premium property profile. High-value homes, stronger location advantage, or large/high-quality property attributes.</span></span>
+                </div>
+
                 <p class="small-note">
-                    Use this as an exploratory layer. Nearby homes with similar colours have similar overall feature profiles.
-                    Sudden colour changes can reveal different house types or unusual local properties.
+                    Important: PCA combines multiple factors, so red does not mean only expensive. It means the overall scaled feature profile is high.
+                    Nearby homes with similar colours have similar property profiles. Sudden colour changes in a small area can reveal local market boundaries or unusual properties.
                 </p>
             </div>
 

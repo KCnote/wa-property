@@ -370,6 +370,47 @@ def land_radius(land_area):
     return 7
 
 
+
+
+def format_price_label(price):
+    """Convert numeric price into a short map label."""
+    price = float(price)
+    if price >= 1_000_000:
+        return f"${price / 1_000_000:.1f}M"
+    return f"${price / 1000:.0f}k"
+
+
+def price_label_marker(row):
+    """Small always-visible price label above each property marker.
+
+    Note: labels add extra HTML. Keep MAX_MAP_POINTS reasonable for S3 static hosting.
+    """
+    price_text = format_price_label(row["price"])
+
+    return folium.Marker(
+        location=[row["latitude"], row["longitude"]],
+        icon=folium.DivIcon(
+            html=f"""
+            <div style="
+                font-size: 11px;
+                font-weight: bold;
+                color: #111;
+                background: rgba(255,255,255,0.88);
+                border: 1px solid #555;
+                border-radius: 4px;
+                padding: 1px 4px;
+                white-space: nowrap;
+                transform: translate(-50%, -28px);
+                box-shadow: 0 1px 3px rgba(0,0,0,0.35);
+                pointer-events: none;
+            ">
+                {price_text}
+            </div>
+            """
+        ),
+    )
+
+
 def popup_html(row, compact=True):
     price = float(row["price"])
     pred = row.get("predicted_price", np.nan)
@@ -867,6 +908,12 @@ def create_map(df_map, gap_pairs, metrics, pca_metrics, total_rows):
             popup=folium.Popup(html, max_width=260),
         )
         pca_marker.add_to(pca_cluster)
+
+        # Always-visible price label for each property.
+        # Added to each main view so the label appears when that view is selected.
+        price_label_marker(row).add_to(price_layer)
+        price_label_marker(row).add_to(house_layer)
+        price_label_marker(row).add_to(pca_layer)
 
     undervalued = (
         df_map.dropna(subset=["prediction_gap"])

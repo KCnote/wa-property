@@ -5,7 +5,7 @@ from folium.plugins import MarkerCluster
 from branca.element import MacroElement
 from jinja2 import Template
 
-from sklearn.cluster import MiniBatchKMeans
+from sklearn.cluster import MiniBatchKMeans, DBSCAN
 from sklearn.preprocessing import StandardScaler
 from sklearn.neighbors import BallTree
 from sklearn.ensemble import RandomForestRegressor
@@ -24,11 +24,6 @@ ATHENA_OUTPUT = "s3://personal-wa-property-storage-337164669284-ap-southeast-2-a
 DEPLOY_BUCKET = "personal-wa-property-server-337164669284-ap-southeast-2-an"
 OUTPUT_HTML = "index.html"
 
-# =========================================================
-# Size control settings
-# =========================================================
-# Main reason Folium gets heavy: every marker/popup is embedded into one HTML file.
-# Keep this number small for S3 static hosting.
 MAX_MAP_POINTS = 3000
 MAX_UNDERVALUED_MARKERS = 150
 MAX_GAP_PAIRS = 100
@@ -80,9 +75,11 @@ def clean_numeric(df):
         "price", "bedrooms", "bathrooms", "garage", "land_area", "floor_area",
         "cbd_dist", "nearest_stn_dist", "nearest_sch_dist", "latitude", "longitude",
     ]
+
     for col in numeric_cols:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
+
     return df
 
 
@@ -132,8 +129,8 @@ def train_random_forest(df):
         random_state=RANDOM_STATE,
         n_jobs=-1,
     )
-    model.fit(X_train, y_train)
 
+    model.fit(X_train, y_train)
     y_pred = model.predict(X_test)
 
     all_pred = model.predict(X)
@@ -144,9 +141,11 @@ def train_random_forest(df):
     df["predicted_price"] = np.nan
     df["prediction_gap"] = np.nan
     df["prediction_gap_pct"] = np.nan
-    df.loc[model_df.index, ["predicted_price", "prediction_gap", "prediction_gap_pct"]] = model_df[
+
+    df.loc[
+        model_df.index,
         ["predicted_price", "prediction_gap", "prediction_gap_pct"]
-    ]
+    ] = model_df[["predicted_price", "prediction_gap", "prediction_gap_pct"]]
 
     importance = sorted(
         zip(available_features, model.feature_importances_),
@@ -165,8 +164,11 @@ def train_random_forest(df):
 
 def add_kmeans_cluster(df, n_clusters=6):
     features = [
-        "latitude", "longitude", "price", "bedrooms", "bathrooms", "garage", "land_area", "floor_area",
+        "latitude", "longitude", "price",
+        "bedrooms", "bathrooms", "garage",
+        "land_area", "floor_area",
     ]
+
     model_df = df.dropna(subset=features).copy()
 
     if len(model_df) < n_clusters:
@@ -177,30 +179,70 @@ def add_kmeans_cluster(df, n_clusters=6):
     scaler = StandardScaler()
     X_scaled = scaler.fit_transform(model_df[features])
 
-    # MiniBatchKMeans is faster and lighter than full KMeans for larger datasets.
     kmeans = MiniBatchKMeans(
         n_clusters=n_clusters,
         random_state=RANDOM_STATE,
         batch_size=512,
         n_init="auto",
     )
+
     model_df["house_group"] = kmeans.fit_predict(X_scaled)
 
     df = df.copy()
     df["house_group"] = 0
     df.loc[model_df.index, "house_group"] = model_df["house_group"].astype(int)
+
+    return df
+
+
+def add_dbscan_cluster(df, eps=0.85, min_samples=12):
+    """
+    DBSCAN groups dense areas automatically.
+
+    dbscan_group:
+      -1 = noise / outlier
+       0,1,2... = density-based clusters
+
+    If most rows become -1, increase eps.
+    Example:
+      eps=1.0
+      eps=1.2
+      eps=1.5
+    """
+    features = [
+        "latitude", "longitude", "price",
+        "bedrooms", "bathrooms", "garage",
+        "land_area", "floor_area",
+    ]
+
+    model_df = df.dropna(subset=features).copy()
+
+    df = df.copy()
+    df["dbscan_group"] = -1
+
+    if len(model_df) < min_samples:
+        return df
+
+    scaler = StandardScaler()
+    X_scaled = scaler.fit_transform(model_df[features])
+
+    dbscan = DBSCAN(
+        eps=eps,
+        min_samples=min_samples,
+        n_jobs=-1,
+    )
+
+    model_df["dbscan_group"] = dbscan.fit_predict(X_scaled)
+
+    df.loc[model_df.index, "dbscan_group"] = model_df["dbscan_group"].astype(int)
+
     return df
 
 
 def add_pca_features(df):
-    """Add PCA scores for visual similarity analysis.
-
-    PCA is used here for exploration, not price prediction. It compresses
-    the main property attributes into two scores so similar homes can be
-    coloured in a continuous way on the map.
-    """
     features = [
-        "price", "bedrooms", "bathrooms", "garage", "land_area", "floor_area", "latitude", "longitude",
+        "price", "bedrooms", "bathrooms", "garage",
+        "land_area", "floor_area", "latitude", "longitude",
     ]
 
     model_df = df.dropna(subset=features).copy()
@@ -223,7 +265,10 @@ def add_pca_features(df):
     model_df["pca2"] = X_pca[:, 1]
     model_df["pca_score"] = model_df["pca1"] + model_df["pca2"]
 
-    df.loc[model_df.index, ["pca1", "pca2", "pca_score"]] = model_df[["pca1", "pca2", "pca_score"]]
+    df.loc[
+        model_df.index,
+        ["pca1", "pca2", "pca_score"]
+    ] = model_df[["pca1", "pca2", "pca_score"]]
 
     return df, {
         "explained_variance": [float(v) for v in pca.explained_variance_ratio_],
@@ -232,13 +277,8 @@ def add_pca_features(df):
 
 
 def select_map_points(df):
-    """Keep the HTML small while preserving useful points.
-
-    Priority:
-    1. Top undervalued candidates from Random Forest
-    2. Random sample from remaining data
-    """
     df = df.copy()
+
     if len(df) <= MAX_MAP_POINTS:
         return df
 
@@ -250,7 +290,11 @@ def select_map_points(df):
 
     remaining = df.drop(index=top_undervalued.index, errors="ignore")
     sample_n = max(0, MAX_MAP_POINTS - len(top_undervalued))
-    sampled = remaining.sample(n=min(sample_n, len(remaining)), random_state=RANDOM_STATE)
+
+    sampled = remaining.sample(
+        n=min(sample_n, len(remaining)),
+        random_state=RANDOM_STATE,
+    )
 
     return pd.concat([top_undervalued, sampled]).sort_index()
 
@@ -266,8 +310,10 @@ def add_local_price_gap_zones(df, radius_m=500, min_price_gap=250000, max_pairs=
     prices = work_df["price"].to_numpy()
 
     tree = BallTree(coords_rad, metric="haversine")
+
     earth_radius_m = 6371000
     radius_rad = radius_m / earth_radius_m
+
     neighbors = tree.query_radius(coords_rad, r=radius_rad)
 
     gap_pairs = []
@@ -277,15 +323,20 @@ def add_local_price_gap_zones(df, radius_m=500, min_price_gap=250000, max_pairs=
         for j in neighbor_indices:
             if i == j:
                 continue
+
             pair_key = tuple(sorted((i, j)))
+
             if pair_key in seen:
                 continue
+
             seen.add(pair_key)
 
             price_gap = abs(float(prices[i]) - float(prices[j]))
+
             if price_gap >= min_price_gap:
                 row_i = work_df.iloc[i]
                 row_j = work_df.iloc[j]
+
                 gap_pairs.append({
                     "i_index": row_i.name,
                     "j_index": row_j.name,
@@ -304,6 +355,7 @@ def add_local_price_gap_zones(df, radius_m=500, min_price_gap=250000, max_pairs=
 
     df = df.copy()
     df["price_gap_zone"] = False
+
     for pair in gap_pairs:
         df.loc[pair["i_index"], "price_gap_zone"] = True
         df.loc[pair["j_index"], "price_gap_zone"] = True
@@ -334,10 +386,27 @@ def house_type_color(group):
     return colors[int(group) % len(colors)]
 
 
+def dbscan_color(group):
+    group = int(group)
+
+    if group == -1:
+        return "#777777"
+
+    colors = [
+        "#1f77b4", "#ff7f0e", "#2ca02c", "#d62728",
+        "#9467bd", "#8c564b", "#e377c2", "#17becf",
+        "#bcbd22", "#7f7f7f",
+    ]
+
+    return colors[group % len(colors)]
+
+
 def pca_color(score):
     if pd.isna(score):
         return "#999999"
+
     score = float(score)
+
     if score < -2.0:
         return "#2c7bb6"
     if score < -0.8:
@@ -346,88 +415,67 @@ def pca_color(score):
         return "#ffffbf"
     if score < 2.0:
         return "#fdae61"
+
     return "#d7191c"
 
 
 def deal_color(row):
     gap_pct = row.get("prediction_gap_pct", np.nan)
+
     if pd.isna(gap_pct):
         return "#999999"
+
     if gap_pct > 0.10:
-        return "#1a9850"  # actual price is meaningfully below model estimate
+        return "#1a9850"
+
     if gap_pct < -0.10:
-        return "#d73027"  # actual price is meaningfully above model estimate
+        return "#d73027"
+
     return "#2b83ba"
 
 
 def land_radius(land_area):
     land_area = float(land_area)
+
     if land_area < 450:
         return 4
     if land_area < 550:
         return 5
     if land_area < 700:
         return 6
+
     return 7
 
 
-
-
 def format_price_label(price):
-    """Convert numeric price into a short map label."""
     price = float(price)
+
     if price >= 1_000_000:
         return f"${price / 1_000_000:.1f}M"
+
     return f"${price / 1000:.0f}k"
 
 
-def price_label_marker(row):
-    """Small price label above each property marker.
-
-    Labels are added to separate hidden label layers and are only shown
-    when the map is zoomed in enough that clustering is disabled.
-    """
-    price_text = format_price_label(row["price"])
-
-    return folium.Marker(
-        location=[row["latitude"], row["longitude"]],
-        icon=folium.DivIcon(
-            html=f"""
-            <div style="
-                font-size: 11px;
-                font-weight: bold;
-                color: #111;
-                background: rgba(255,255,255,0.88);
-                border: 1px solid #555;
-                border-radius: 4px;
-                padding: 1px 4px;
-                white-space: nowrap;
-                transform: translate(-50%, -28px);
-                box-shadow: 0 1px 3px rgba(0,0,0,0.35);
-                pointer-events: none;
-            ">
-                {price_text}
-            </div>
-            """
-        ),
-    )
-
-
-def popup_html(row, compact=True):
+def popup_html(row):
     price = float(row["price"])
     pred = row.get("predicted_price", np.nan)
     gap = row.get("prediction_gap", np.nan)
+    dbscan_group = row.get("dbscan_group", -1)
 
     pred_line = ""
+
     if not pd.isna(pred):
         pred_line = f"Predicted: ${pred:,.0f}<br>Gap: ${gap:,.0f}<br>"
 
-    # Keep popup short. Long popup text is a major HTML-size driver.
+    dbscan_text = "Outlier / Noise" if int(dbscan_group) == -1 else f"Cluster {int(dbscan_group)}"
+
     return f"""
     <b>{row.get('address', '')}</b><br>
     {row.get('suburb', '')}<br>
     Price: ${price:,.0f}<br>
     {pred_line}
+    KMeans Type: {int(row.get('house_group', 0))}<br>
+    DBSCAN: {dbscan_text}<br>
     Bed/Bath/Garage: {row.get('bedrooms', '')}/{row.get('bathrooms', '')}/{row.get('garage', '')}<br>
     Land: {row.get('land_area', '')} sqm
     """
@@ -542,125 +590,88 @@ def house_cluster_icon_function():
     """
 
 
-class ClusterAreaLayer(MacroElement):
-    """Lightweight coloured rectangle coverage for visible marker clusters.
+def dbscan_cluster_icon_function():
+    return """
+    function(cluster) {
+        var markers = cluster.getAllChildMarkers();
+        var counts = {};
+        var total = markers.length;
 
-    This restores the richer colour feel without adding thousands of extra markers.
+        markers.forEach(function(marker) {
+            var g = marker.options.dbscanGroup;
+            counts[g] = (counts[g] || 0) + 1;
+        });
+
+        var majorityGroup = -1;
+        var maxCount = 0;
+
+        Object.keys(counts).forEach(function(g) {
+            if (counts[g] > maxCount) {
+                maxCount = counts[g];
+                majorityGroup = g;
+            }
+        });
+
+        var colors = [
+            "#1f77b4", "#ff7f0e", "#2ca02c", "#d62728",
+            "#9467bd", "#8c564b", "#e377c2", "#17becf",
+            "#bcbd22", "#7f7f7f"
+        ];
+
+        var color = Number(majorityGroup) === -1
+            ? "#777777"
+            : colors[Number(majorityGroup) % colors.length];
+
+        var label = Number(majorityGroup) === -1
+            ? "Noise"
+            : "D" + majorityGroup;
+
+        return L.divIcon({
+            html:
+                '<div style="' +
+                'background:' + color + ';' +
+                'color:white;' +
+                'border:3px solid white;' +
+                'border-radius:50%;' +
+                'width:58px;' +
+                'height:58px;' +
+                'display:flex;' +
+                'flex-direction:column;' +
+                'align-items:center;' +
+                'justify-content:center;' +
+                'font-size:12px;' +
+                'font-weight:bold;' +
+                'box-shadow:0 0 6px rgba(0,0,0,0.45);' +
+                '">' +
+                '<div>' + label + '</div>' +
+                '<div style="font-size:10px;">' + total + '</div>' +
+                '</div>',
+            className: "dbscan-cluster-icon",
+            iconSize: [58, 58]
+        });
+    }
     """
-    def __init__(self, map_name, parent_layer_name, cluster_name, mode):
-        super().__init__()
-        self._name = "ClusterAreaLayer"
-        self.map_name = map_name
-        self.parent_layer_name = parent_layer_name
-        self.cluster_name = cluster_name
-        self.mode = mode
-
-        self._template = Template("""
-        {% macro script(this, kwargs) %}
-
-        var areaLayer_{{ this.cluster_name }} = L.layerGroup();
-
-        function getPriceColor_{{ this.cluster_name }}(price) {
-            if (price < 400000) return "#1a9850";
-            if (price < 500000) return "#66bd63";
-            if (price < 600000) return "#a6d96a";
-            if (price < 700000) return "#fee08b";
-            if (price < 800000) return "#fdae61";
-            if (price < 900000) return "#f46d43";
-            if (price < 1000000) return "#d73027";
-            return "#a50026";
-        }
-
-        function getHouseColor_{{ this.cluster_name }}(group) {
-            var colors = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd", "#000000"];
-            return colors[Number(group) % colors.length];
-        }
-
-        function getClusterInfo_{{ this.cluster_name }}(cluster) {
-            var markers = cluster.getAllChildMarkers();
-            var priceSum = 0;
-            var priceCount = 0;
-            var groupCounts = {};
-
-            markers.forEach(function(marker) {
-                if (marker.options.price !== undefined && marker.options.price !== null) {
-                    priceSum += Number(marker.options.price);
-                    priceCount += 1;
-                }
-                var g = marker.options.houseGroup;
-                groupCounts[g] = (groupCounts[g] || 0) + 1;
-            });
-
-            var majorityGroup = 0;
-            var maxCount = 0;
-            Object.keys(groupCounts).forEach(function(g) {
-                if (groupCounts[g] > maxCount) {
-                    maxCount = groupCounts[g];
-                    majorityGroup = g;
-                }
-            });
-
-            return {
-                avgPrice: priceCount > 0 ? priceSum / priceCount : 0,
-                majorityGroup: majorityGroup
-            };
-        }
-
-        function redrawArea_{{ this.cluster_name }}() {
-            areaLayer_{{ this.cluster_name }}.clearLayers();
-
-            if (!{{ this.map_name }}.hasLayer({{ this.parent_layer_name }})) {
-                if ({{ this.map_name }}.hasLayer(areaLayer_{{ this.cluster_name }})) {
-                    {{ this.map_name }}.removeLayer(areaLayer_{{ this.cluster_name }});
-                }
-                return;
-            }
-
-            if (!{{ this.map_name }}.hasLayer(areaLayer_{{ this.cluster_name }})) {
-                areaLayer_{{ this.cluster_name }}.addTo({{ this.map_name }});
-            }
-
-            {{ this.cluster_name }}._featureGroup.eachLayer(function(layer) {
-                if (layer instanceof L.MarkerCluster) {
-                    var info = getClusterInfo_{{ this.cluster_name }}(layer);
-                    var bounds = layer.getBounds();
-                    var color = "{{ this.mode }}" === "price"
-                        ? getPriceColor_{{ this.cluster_name }}(info.avgPrice)
-                        : getHouseColor_{{ this.cluster_name }}(info.majorityGroup);
-
-                    L.rectangle(bounds, {
-                        color: color,
-                        weight: 3,
-                        fillColor: color,
-                        fillOpacity: 0.26,
-                        interactive: false
-                    }).addTo(areaLayer_{{ this.cluster_name }}).bringToBack();
-                }
-            });
-        }
-
-        {{ this.map_name }}.on("zoomend moveend overlayadd overlayremove", redrawArea_{{ this.cluster_name }});
-        {{ this.cluster_name }}.on("animationend", redrawArea_{{ this.cluster_name }});
-        setTimeout(redrawArea_{{ this.cluster_name }}, 700);
-
-        {% endmacro %}
-        """)
 
 
 class LightInfoPane(MacroElement):
-    def __init__(self, map_name, price_layer_name, house_layer_name, pca_layer_name, deal_layer_name, gap_layer_name, metrics, pca_metrics, total_rows, map_rows):
+    def __init__(
+        self,
+        map_name,
+        price_layer_name,
+        house_layer_name,
+        dbscan_layer_name,
+        pca_layer_name,
+        deal_layer_name,
+        gap_layer_name,
+        metrics,
+        pca_metrics,
+        dbscan_summary,
+        total_rows,
+        map_rows,
+    ):
         super().__init__()
+
         self._name = "LightInfoPane"
-        self.map_name = map_name
-        self.price_layer_name = price_layer_name
-        self.house_layer_name = house_layer_name
-        self.pca_layer_name = pca_layer_name
-        self.deal_layer_name = deal_layer_name
-        self.gap_layer_name = gap_layer_name
-        self.metrics = metrics
-        self.pca_metrics = pca_metrics
-        self.total_rows = total_rows
-        self.map_rows = map_rows
 
         if metrics.get("mae") is None:
             mae_text = "N/A"
@@ -675,10 +686,17 @@ class LightInfoPane(MacroElement):
             )
 
         pca_ev = pca_metrics.get("explained_variance", []) if pca_metrics else []
+
         if len(pca_ev) >= 2:
-            pca_text = f"PC1 explains {pca_ev[0] * 100:.1f}% and PC2 explains {pca_ev[1] * 100:.1f}% of the scaled feature variance."
+            pca_text = (
+                f"PC1 explains {pca_ev[0] * 100:.1f}% and "
+                f"PC2 explains {pca_ev[1] * 100:.1f}% of the scaled feature variance."
+            )
         else:
             pca_text = "PCA metrics are not available."
+
+        dbscan_cluster_count = dbscan_summary.get("cluster_count", 0)
+        dbscan_noise_count = dbscan_summary.get("noise_count", 0)
 
         self._template = Template(f"""
         {{% macro html(this, kwargs) %}}
@@ -687,7 +705,7 @@ class LightInfoPane(MacroElement):
                 position: fixed;
                 top: 80px;
                 left: 20px;
-                width: 355px;
+                width: 370px;
                 max-height: 78vh;
                 overflow-y: auto;
                 z-index: 9999;
@@ -703,58 +721,105 @@ class LightInfoPane(MacroElement):
             #info-pane h3 {{ margin: 0 0 8px 0; font-size: 17px; }}
             #info-pane h4 {{ margin: 13px 0 6px 0; font-size: 14px; }}
             #info-pane p {{ margin: 6px 0; }}
-            #info-pane .section {{ display: none; border-top: 1px solid #ddd; padding-top: 8px; margin-top: 9px; }}
-            #info-pane .legend-row {{ display:flex; align-items:center; gap:8px; margin:5px 0; }}
-            #info-pane .swatch {{ width:18px; height:14px; border:1px solid #777; flex:0 0 auto; }}
-            #info-pane .circle-swatch {{ width:14px; height:14px; border-radius:50%; border:1px solid #777; flex:0 0 auto; }}
-            #info-pane .line-swatch {{ width:28px; height:4px; background:red; flex:0 0 auto; }}
-            #info-pane .small-note {{ color:#555; font-size:12px; }}
-            #info-pane .metric-box {{ background:#f7f7f7; border:1px solid #ddd; border-radius:7px; padding:7px; margin:6px 0; }}
-            #info-pane ol {{ padding-left: 20px; margin: 6px 0; }}
+            #info-pane .section {{
+                display: none;
+                border-top: 1px solid #ddd;
+                padding-top: 8px;
+                margin-top: 9px;
+            }}
+            #info-pane .legend-row {{
+                display:flex;
+                align-items:center;
+                gap:8px;
+                margin:5px 0;
+            }}
+            #info-pane .swatch {{
+                width:18px;
+                height:14px;
+                border:1px solid #777;
+                flex:0 0 auto;
+            }}
+            #info-pane .circle-swatch {{
+                width:14px;
+                height:14px;
+                border-radius:50%;
+                border:1px solid #777;
+                flex:0 0 auto;
+            }}
+            #info-pane .line-swatch {{
+                width:28px;
+                height:4px;
+                background:red;
+                flex:0 0 auto;
+            }}
+            #info-pane .small-note {{
+                color:#555;
+                font-size:12px;
+            }}
+            #info-pane .metric-box {{
+                background:#f7f7f7;
+                border:1px solid #ddd;
+                border-radius:7px;
+                padding:7px;
+                margin:6px 0;
+            }}
+            #info-pane ol {{
+                padding-left: 20px;
+                margin: 6px 0;
+            }}
         </style>
 
         <div id="info-pane">
             <h3>WA Property Map Guide</h3>
             <div class="small-note">
-                Loaded rows: {self.total_rows:,}<br>
-                Displayed map points: {self.map_rows:,}<br>
-                The map uses sampled points to keep the static HTML light, but keeps the original colour interpretation.
+                Loaded rows: {total_rows:,}<br>
+                Displayed map points: {map_rows:,}<br>
+                Static Folium HTML uses sampled points to keep S3 hosting light.
             </div>
 
             <div id="price-info" class="section">
                 <h4>Price View</h4>
-                <p>
-                    This layer shows actual sold prices. Each property point and cluster area is coloured by price band.
-                    Cluster bubbles show the average price of properties inside that cluster.
-                </p>
-                <div class="legend-row"><span class="swatch" style="background:#1a9850"></span><span><b>&lt; $400k</b> — lowest price band / affordable stock</span></div>
-                <div class="legend-row"><span class="swatch" style="background:#66bd63"></span><span><b>$400k - $500k</b> — lower-mid price band</span></div>
-                <div class="legend-row"><span class="swatch" style="background:#a6d96a"></span><span><b>$500k - $600k</b> — mid price band</span></div>
-                <div class="legend-row"><span class="swatch" style="background:#fee08b"></span><span><b>$600k - $700k</b> — typical family-home range</span></div>
-                <div class="legend-row"><span class="swatch" style="background:#fdae61"></span><span><b>$700k - $800k</b> — upper-mid price band</span></div>
-                <div class="legend-row"><span class="swatch" style="background:#f46d43"></span><span><b>$800k - $900k</b> — expensive properties</span></div>
-                <div class="legend-row"><span class="swatch" style="background:#d73027"></span><span><b>$900k - $1M</b> — high-price properties</span></div>
-                <div class="legend-row"><span class="swatch" style="background:#a50026"></span><span><b>$1M+</b> — premium/high-end properties</span></div>
-                <p class="small-note">
-                    Circle size roughly follows land area. Larger circles generally indicate larger land parcels.
-                </p>
+                <p>This layer shows actual sold prices.</p>
+                <div class="legend-row"><span class="swatch" style="background:#1a9850"></span><span><b>&lt; $400k</b></span></div>
+                <div class="legend-row"><span class="swatch" style="background:#66bd63"></span><span><b>$400k - $500k</b></span></div>
+                <div class="legend-row"><span class="swatch" style="background:#a6d96a"></span><span><b>$500k - $600k</b></span></div>
+                <div class="legend-row"><span class="swatch" style="background:#fee08b"></span><span><b>$600k - $700k</b></span></div>
+                <div class="legend-row"><span class="swatch" style="background:#fdae61"></span><span><b>$700k - $800k</b></span></div>
+                <div class="legend-row"><span class="swatch" style="background:#f46d43"></span><span><b>$800k - $900k</b></span></div>
+                <div class="legend-row"><span class="swatch" style="background:#d73027"></span><span><b>$900k - $1M</b></span></div>
+                <div class="legend-row"><span class="swatch" style="background:#a50026"></span><span><b>$1M+</b></span></div>
             </div>
 
             <div id="house-info" class="section">
-                <h4>House Classification View</h4>
+                <h4>KMeans House Classification View</h4>
                 <p>
-                    This layer uses MiniBatchKMeans to group similar homes. The model considers location, price,
-                    bedrooms, bathrooms, garage, land area, and floor area. The group names below are human-friendly
-                    interpretation labels, not labels learned directly by the model.
+                    KMeans separates properties into a fixed number of groups.
+                    Here it uses location, price, rooms, land size, and floor area.
                 </p>
-                <div class="legend-row"><span class="swatch" style="background:#1f77b4"></span><span><b>Type 0 — Affordable Suburbs</b><br><span class="small-note">Lower-price suburban homes or budget-friendly areas.</span></span></div>
-                <div class="legend-row"><span class="swatch" style="background:#ff7f0e"></span><span><b>Type 1 — Family Housing</b><br><span class="small-note">Typical family-oriented homes with balanced land and building size.</span></span></div>
-                <div class="legend-row"><span class="swatch" style="background:#2ca02c"></span><span><b>Type 2 — Premium Housing</b><br><span class="small-note">Higher-price homes with stronger location or property attributes.</span></span></div>
-                <div class="legend-row"><span class="swatch" style="background:#d62728"></span><span><b>Type 3 — Inner-city High Price</b><br><span class="small-note">Compact or central homes where location can dominate price.</span></span></div>
-                <div class="legend-row"><span class="swatch" style="background:#9467bd"></span><span><b>Type 4 — Large Land Value Homes</b><br><span class="small-note">Homes where land size/value appears relatively important.</span></span></div>
-                <div class="legend-row"><span class="swatch" style="background:#000000"></span><span><b>Type 5 — Compact Budget Homes</b><br><span class="small-note">Smaller and more budget-friendly homes.</span></span></div>
+                <div class="legend-row"><span class="swatch" style="background:#1f77b4"></span><span><b>Type 0</b> — affordable or lower-profile homes</span></div>
+                <div class="legend-row"><span class="swatch" style="background:#ff7f0e"></span><span><b>Type 1</b> — typical family housing</span></div>
+                <div class="legend-row"><span class="swatch" style="background:#2ca02c"></span><span><b>Type 2</b> — stronger / premium profile</span></div>
+                <div class="legend-row"><span class="swatch" style="background:#d62728"></span><span><b>Type 3</b> — location-sensitive high price profile</span></div>
+                <div class="legend-row"><span class="swatch" style="background:#9467bd"></span><span><b>Type 4</b> — large land / value profile</span></div>
+                <div class="legend-row"><span class="swatch" style="background:#000000"></span><span><b>Type 5</b> — compact or unusual profile</span></div>
+            </div>
+
+            <div id="dbscan-info" class="section">
+                <h4>DBSCAN Density View</h4>
+                <p>
+                    DBSCAN finds dense groups automatically. Unlike KMeans, it does not require choosing the number of groups first.
+                    It is useful for finding natural local property zones and outliers.
+                </p>
+                <div class="metric-box">
+                    <b>DBSCAN summary</b><br>
+                    Detected clusters: {dbscan_cluster_count}<br>
+                    Noise / outlier points: {dbscan_noise_count}
+                </div>
+                <div class="legend-row"><span class="swatch" style="background:#777777"></span><span><b>Grey</b> — noise / outlier</span></div>
+                <div class="legend-row"><span class="swatch" style="background:#1f77b4"></span><span><b>Blue and other colours</b> — dense property groups</span></div>
                 <p class="small-note">
-                    Because KMeans is unsupervised, these groups are best used as exploration hints, not final property categories.
+                    If almost everything is grey, eps is too small. Increase eps from 0.85 to 1.0, 1.2, or 1.5.
+                    If everything becomes one group, eps is too large.
                 </p>
             </div>
 
@@ -762,51 +827,22 @@ class LightInfoPane(MacroElement):
                 <h4>PCA Similarity View</h4>
                 <p>
                     PCA compresses price, size, room count, land/building size, and location into two main components.
-                    It does not predict price; it shows overall property similarity and market profile.
                 </p>
                 <div class="metric-box">
                     <b>PCA summary</b><br>
                     {pca_text}
                 </div>
-
-                <h4>PCA Colour Meaning</h4>
-                <div class="legend-row">
-                    <span class="swatch" style="background:#2c7bb6"></span>
-                    <span><b>Deep Blue — Very Low PCA Score</b><br>
-                    <span class="small-note">Budget / entry-level profile. Usually lower price, smaller home size, fewer rooms, or less premium location.</span></span>
-                </div>
-                <div class="legend-row">
-                    <span class="swatch" style="background:#00a6ca"></span>
-                    <span><b>Blue — Low PCA Score</b><br>
-                    <span class="small-note">Lower-mid suburban profile. Still relatively affordable, but generally more balanced than the deepest blue group.</span></span>
-                </div>
-                <div class="legend-row">
-                    <span class="swatch" style="background:#ffffbf"></span>
-                    <span><b>Yellow — Average PCA Score</b><br>
-                    <span class="small-note">Typical market baseline. Balanced price, size, rooms, land, and location features.</span></span>
-                </div>
-                <div class="legend-row">
-                    <span class="swatch" style="background:#fdae61"></span>
-                    <span><b>Orange — High PCA Score</b><br>
-                    <span class="small-note">Upper-mid / stronger property profile. Often higher price, larger floor area/land, more rooms, or better location.</span></span>
-                </div>
-                <div class="legend-row">
-                    <span class="swatch" style="background:#d7191c"></span>
-                    <span><b>Red — Very High PCA Score</b><br>
-                    <span class="small-note">Premium property profile. High-value homes, stronger location advantage, or large/high-quality property attributes.</span></span>
-                </div>
-
-                <p class="small-note">
-                    Important: PCA combines multiple factors, so red does not mean only expensive. It means the overall scaled feature profile is high.
-                    Nearby homes with similar colours have similar property profiles. Sudden colour changes in a small area can reveal local market boundaries or unusual properties.
-                </p>
+                <div class="legend-row"><span class="swatch" style="background:#2c7bb6"></span><span><b>Deep Blue</b> — very low PCA score</span></div>
+                <div class="legend-row"><span class="swatch" style="background:#00a6ca"></span><span><b>Blue</b> — low PCA score</span></div>
+                <div class="legend-row"><span class="swatch" style="background:#ffffbf"></span><span><b>Yellow</b> — average PCA score</span></div>
+                <div class="legend-row"><span class="swatch" style="background:#fdae61"></span><span><b>Orange</b> — high PCA score</span></div>
+                <div class="legend-row"><span class="swatch" style="background:#d7191c"></span><span><b>Red</b> — very high PCA score</span></div>
             </div>
 
             <div id="deal-info" class="section">
                 <h4>Random Forest Valuation</h4>
                 <p>
-                    Random Forest predicts a reasonable price from property attributes and location.
-                    This layer highlights only the strongest undervalued candidates to avoid making the HTML too large.
+                    Random Forest predicts estimated price and highlights possible undervalued candidates.
                 </p>
                 <div class="metric-box">
                     <b>Model metrics</b><br>
@@ -816,23 +852,18 @@ class LightInfoPane(MacroElement):
                 <h4>Top Features</h4>
                 <ol>{feature_html}</ol>
                 <div class="legend-row"><span class="circle-swatch" style="background:#1a9850"></span><span><b>Green</b> — actual price is more than 10% below predicted value</span></div>
-                <div class="legend-row"><span class="circle-swatch" style="background:#2b83ba"></span><span><b>Blue</b> — actual price is close to predicted value</span></div>
+                <div class="legend-row"><span class="circle-swatch" style="background:#2b83ba"></span><span><b>Blue</b> — close to predicted value</span></div>
                 <div class="legend-row"><span class="circle-swatch" style="background:#d73027"></span><span><b>Red</b> — actual price is more than 10% above predicted value</span></div>
-                <p class="small-note">
-                    Positive gap = predicted price is higher than actual price. This can suggest possible undervaluation,
-                    but it still needs manual checking against condition, renovation, zoning, and listing details.
-                </p>
             </div>
 
             <div id="gap-info" class="section">
                 <h4>Local Price Gap Zones</h4>
                 <p>
-                    This layer highlights nearby homes with large price differences. It is useful for spotting local price boundaries,
-                    transition zones, or areas where suburb/street-level factors may strongly affect value.
+                    Nearby homes with large price differences. Useful for spotting local value boundaries.
                 </p>
                 <div class="legend-row"><span class="line-swatch"></span><span><b>Red line</b> — nearby pair with a large price gap</span></div>
                 <p class="small-note">
-                    Current rule: within 500m and at least $250k difference. Only top gap pairs are shown to keep the map light.
+                    Current rule: within 500m and at least $250k difference.
                 </p>
             </div>
         </div>
@@ -840,30 +871,35 @@ class LightInfoPane(MacroElement):
 
         {{% macro script(this, kwargs) %}}
         function updateInfoPane() {{
-            document.getElementById("price-info").style.display = {self.map_name}.hasLayer({self.price_layer_name}) ? "block" : "none";
-            document.getElementById("house-info").style.display = {self.map_name}.hasLayer({self.house_layer_name}) ? "block" : "none";
-            document.getElementById("pca-info").style.display = {self.map_name}.hasLayer({self.pca_layer_name}) ? "block" : "none";
-            document.getElementById("deal-info").style.display = {self.map_name}.hasLayer({self.deal_layer_name}) ? "block" : "none";
-            document.getElementById("gap-info").style.display = {self.map_name}.hasLayer({self.gap_layer_name}) ? "block" : "none";
+            document.getElementById("price-info").style.display =
+                {map_name}.hasLayer({price_layer_name}) ? "block" : "none";
+
+            document.getElementById("house-info").style.display =
+                {map_name}.hasLayer({house_layer_name}) ? "block" : "none";
+
+            document.getElementById("dbscan-info").style.display =
+                {map_name}.hasLayer({dbscan_layer_name}) ? "block" : "none";
+
+            document.getElementById("pca-info").style.display =
+                {map_name}.hasLayer({pca_layer_name}) ? "block" : "none";
+
+            document.getElementById("deal-info").style.display =
+                {map_name}.hasLayer({deal_layer_name}) ? "block" : "none";
+
+            document.getElementById("gap-info").style.display =
+                {map_name}.hasLayer({gap_layer_name}) ? "block" : "none";
         }}
-        {self.map_name}.on("overlayadd overlayremove", updateInfoPane);
+
+        {map_name}.on("overlayadd overlayremove", updateInfoPane);
         setTimeout(updateInfoPane, 500);
         {{% endmacro %}}
         """)
 
 
 class ViewportPriceLabelController(MacroElement):
-    """Render price labels only for homes inside the current viewport.
-
-    Important: this is real viewport-based rendering for labels.
-    The browser does not create thousands of label DOM nodes at page load.
-    Labels are created only when:
-      1. zoom >= zoom_threshold
-      2. the related view layer is enabled
-      3. the property point is inside the current map bounds
-    """
     def __init__(self, map_name, zoom_threshold, label_data, watched_layers):
         super().__init__()
+
         self._name = "ViewportPriceLabelController"
         self.map_name = map_name
         self.zoom_threshold = zoom_threshold
@@ -871,7 +907,8 @@ class ViewportPriceLabelController(MacroElement):
         self.watched_layers = watched_layers
 
         active_layer_conditions = " || ".join(
-            f"{self.map_name}.hasLayer({layer_name})" for layer_name in watched_layers
+            f"{self.map_name}.hasLayer({layer_name})"
+            for layer_name in watched_layers
         )
 
         self._template = Template(f"""
@@ -967,10 +1004,15 @@ class ViewportPriceLabelController(MacroElement):
             for (var i = 0; i < viewportPriceLabelData.length; i++) {{
                 var item = viewportPriceLabelData[i];
                 var latlng = L.latLng(item[0], item[1]);
+
                 if (bounds.contains(latlng)) {{
-                    L.marker(latlng, {{ icon: makePriceLabelIcon(item[2]), interactive: false }})
-                        .addTo(viewportPriceLabels);
+                    L.marker(latlng, {{
+                        icon: makePriceLabelIcon(item[2]),
+                        interactive: false
+                    }}).addTo(viewportPriceLabels);
+
                     added += 1;
+
                     if (added >= viewportPriceLabelMaxVisible) break;
                 }}
             }}
@@ -987,17 +1029,22 @@ class ViewportPriceLabelController(MacroElement):
         """)
 
 
-def create_map(df_map, gap_pairs, metrics, pca_metrics, total_rows):
+def create_map(df_map, gap_pairs, metrics, pca_metrics, dbscan_summary, total_rows):
     if df_map.empty:
         raise RuntimeError("No data found from Athena.")
 
     center_lat = df_map["latitude"].mean()
     center_lon = df_map["longitude"].mean()
 
-    m = folium.Map(location=[center_lat, center_lon], zoom_start=10, tiles="OpenStreetMap")
+    m = folium.Map(
+        location=[center_lat, center_lon],
+        zoom_start=10,
+        tiles="OpenStreetMap",
+    )
 
     price_layer = folium.FeatureGroup(name="Price View", show=True).add_to(m)
-    house_layer = folium.FeatureGroup(name="House Classification View", show=False).add_to(m)
+    house_layer = folium.FeatureGroup(name="KMeans House Classification View", show=False).add_to(m)
+    dbscan_layer = folium.FeatureGroup(name="DBSCAN Density View", show=False).add_to(m)
     pca_layer = folium.FeatureGroup(name="PCA Similarity View", show=False).add_to(m)
     deal_layer = folium.FeatureGroup(name="RF Undervalued Candidates", show=False).add_to(m)
     gap_layer = folium.FeatureGroup(name="Local Price Gap Zones", show=False).add_to(m)
@@ -1017,11 +1064,19 @@ def create_map(df_map, gap_pairs, metrics, pca_metrics, total_rows):
         icon_create_function=price_cluster_icon_function(),
         options=cluster_options,
     ).add_to(price_layer)
+
     house_cluster = MarkerCluster(
-        name="House Cluster",
+        name="KMeans Cluster",
         icon_create_function=house_cluster_icon_function(),
         options=cluster_options,
     ).add_to(house_layer)
+
+    dbscan_cluster = MarkerCluster(
+        name="DBSCAN Cluster",
+        icon_create_function=dbscan_cluster_icon_function(),
+        options=cluster_options,
+    ).add_to(dbscan_layer)
+
     pca_cluster = MarkerCluster(
         name="PCA Similarity Cluster",
         options=cluster_options,
@@ -1044,6 +1099,7 @@ def create_map(df_map, gap_pairs, metrics, pca_metrics, total_rows):
         )
         price_marker.options["price"] = price
         price_marker.options["houseGroup"] = int(row["house_group"])
+        price_marker.options["dbscanGroup"] = int(row["dbscan_group"])
         price_marker.add_to(price_cluster)
 
         house_marker = folium.CircleMarker(
@@ -1058,7 +1114,23 @@ def create_map(df_map, gap_pairs, metrics, pca_metrics, total_rows):
         )
         house_marker.options["price"] = price
         house_marker.options["houseGroup"] = int(row["house_group"])
+        house_marker.options["dbscanGroup"] = int(row["dbscan_group"])
         house_marker.add_to(house_cluster)
+
+        dbscan_marker = folium.CircleMarker(
+            location=[row["latitude"], row["longitude"]],
+            radius=radius + 1,
+            color="#222222",
+            fill=True,
+            fill_color=dbscan_color(row["dbscan_group"]),
+            fill_opacity=0.95,
+            weight=1,
+            popup=folium.Popup(html, max_width=260),
+        )
+        dbscan_marker.options["price"] = price
+        dbscan_marker.options["houseGroup"] = int(row["house_group"])
+        dbscan_marker.options["dbscanGroup"] = int(row["dbscan_group"])
+        dbscan_marker.add_to(dbscan_cluster)
 
         pca_marker = folium.CircleMarker(
             location=[row["latitude"], row["longitude"]],
@@ -1097,44 +1169,41 @@ def create_map(df_map, gap_pairs, metrics, pca_metrics, total_rows):
         A: ${pair['price1']:,.0f}<br>
         B: ${pair['price2']:,.0f}
         """
+
         folium.PolyLine(
-            locations=[[pair["lat1"], pair["lon1"]], [pair["lat2"], pair["lon2"]]],
+            locations=[
+                [pair["lat1"], pair["lon1"]],
+                [pair["lat2"], pair["lon2"]],
+            ],
             color="red",
             weight=3,
             opacity=0.65,
             popup=folium.Popup(line_popup, max_width=260),
         ).add_to(gap_layer)
 
-    # Restore rich-looking colour regions without adding more data points.
-    m.get_root().add_child(ClusterAreaLayer(
-        map_name=m.get_name(),
-        parent_layer_name=price_layer.get_name(),
-        cluster_name=price_cluster.get_name(),
-        mode="price",
-    ))
-    m.get_root().add_child(ClusterAreaLayer(
-        map_name=m.get_name(),
-        parent_layer_name=house_layer.get_name(),
-        cluster_name=house_cluster.get_name(),
-        mode="house",
-    ))
-
     info_pane = LightInfoPane(
         map_name=m.get_name(),
         price_layer_name=price_layer.get_name(),
         house_layer_name=house_layer.get_name(),
+        dbscan_layer_name=dbscan_layer.get_name(),
         pca_layer_name=pca_layer.get_name(),
         deal_layer_name=deal_layer.get_name(),
         gap_layer_name=gap_layer.get_name(),
         metrics=metrics,
         pca_metrics=pca_metrics,
+        dbscan_summary=dbscan_summary,
         total_rows=total_rows,
         map_rows=len(df_map),
     )
+
     m.get_root().add_child(info_pane)
 
     label_data = [
-        [float(row["latitude"]), float(row["longitude"]), format_price_label(row["price"])]
+        [
+            float(row["latitude"]),
+            float(row["longitude"]),
+            format_price_label(row["price"]),
+        ]
         for _, row in df_map.dropna(subset=["latitude", "longitude", "price"]).iterrows()
     ]
 
@@ -1145,16 +1214,19 @@ def create_map(df_map, gap_pairs, metrics, pca_metrics, total_rows):
         watched_layers=[
             price_layer.get_name(),
             house_layer.get_name(),
+            dbscan_layer.get_name(),
             pca_layer.get_name(),
         ],
     ))
 
     folium.LayerControl(collapsed=False).add_to(m)
+
     return m
 
 
 def upload_to_s3():
     s3 = boto3.client("s3")
+
     s3.upload_file(
         OUTPUT_HTML,
         DEPLOY_BUCKET,
@@ -1169,14 +1241,33 @@ def upload_to_s3():
 def main():
     df = load_data()
     df = clean_numeric(df)
-    total_rows = len(df)
 
+    total_rows = len(df)
     print("Loaded rows:", total_rows)
 
     df, metrics = train_random_forest(df)
     print("Random Forest metrics:", metrics)
 
     df = add_kmeans_cluster(df, n_clusters=6)
+
+    df = add_dbscan_cluster(
+        df,
+        eps=0.85,
+        min_samples=12,
+    )
+
+    dbscan_groups = sorted(df["dbscan_group"].dropna().unique().tolist())
+    dbscan_cluster_count = len([g for g in dbscan_groups if int(g) != -1])
+    dbscan_noise_count = int((df["dbscan_group"] == -1).sum())
+
+    dbscan_summary = {
+        "groups": dbscan_groups,
+        "cluster_count": dbscan_cluster_count,
+        "noise_count": dbscan_noise_count,
+    }
+
+    print("DBSCAN summary:", dbscan_summary)
+
     df, pca_metrics = add_pca_features(df)
     print("PCA metrics:", pca_metrics)
 
@@ -1189,13 +1280,24 @@ def main():
         min_price_gap=250000,
         max_pairs=MAX_GAP_PAIRS,
     )
+
     print("Displayed local price gap pairs:", len(gap_pairs))
 
-    m = create_map(df_map, gap_pairs, metrics, pca_metrics, total_rows)
+    m = create_map(
+        df_map=df_map,
+        gap_pairs=gap_pairs,
+        metrics=metrics,
+        pca_metrics=pca_metrics,
+        dbscan_summary=dbscan_summary,
+        total_rows=total_rows,
+    )
+
     m.save(OUTPUT_HTML)
 
     print(f"Generated {OUTPUT_HTML}")
+
     upload_to_s3()
+
     print(f"Uploaded to s3://{DEPLOY_BUCKET}/{OUTPUT_HTML}")
 
 

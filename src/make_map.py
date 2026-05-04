@@ -852,6 +852,56 @@ class ViewportPriceLabelController(MacroElement):
         )
 
         self._template = Template(f"""
+        {{% macro html(this, kwargs) %}}
+        <style>
+            .viewport-price-label-clean {
+                background: transparent !important;
+                border: none !important;
+                box-shadow: none !important;
+            }
+            .price-badge-blue {
+                position: relative;
+                display: inline-flex;
+                align-items: center;
+                gap: 4px;
+                padding: 3px 7px;
+                border-radius: 999px;
+                background: linear-gradient(135deg, #0f5bd8 0%, #1e9bff 52%, #72d7ff 100%);
+                color: white;
+                font-size: 11px;
+                font-weight: 800;
+                line-height: 1;
+                letter-spacing: 0.1px;
+                white-space: nowrap;
+                border: 1px solid rgba(255,255,255,0.92);
+                box-shadow: 0 3px 8px rgba(0,42,120,0.36), 0 0 0 1px rgba(15,91,216,0.28);
+                text-shadow: 0 1px 1px rgba(0,0,0,0.32);
+                pointer-events: none;
+            }
+            .price-badge-blue::after {
+                content: "";
+                position: absolute;
+                left: 50%;
+                bottom: -6px;
+                transform: translateX(-50%);
+                width: 0;
+                height: 0;
+                border-left: 5px solid transparent;
+                border-right: 5px solid transparent;
+                border-top: 6px solid #1e9bff;
+                filter: drop-shadow(0 2px 1px rgba(0,0,0,0.18));
+            }
+            .price-badge-dot {
+                width: 6px;
+                height: 6px;
+                border-radius: 50%;
+                background: rgba(255,255,255,0.92);
+                box-shadow: 0 0 0 2px rgba(255,255,255,0.24);
+                flex: 0 0 auto;
+            }
+        </style>
+        {{% endmacro %}}
+
         {{% macro script(this, kwargs) %}}
         var viewportPriceLabels = L.layerGroup();
         var viewportPriceLabelData = {self.label_data_json};
@@ -860,22 +910,14 @@ class ViewportPriceLabelController(MacroElement):
 
         function makePriceLabelIcon(text) {{
             return L.divIcon({{
-                className: "viewport-price-label",
+                className: "viewport-price-label-clean",
                 html:
-                    '<div style="' +
-                    'font-size:11px;' +
-                    'font-weight:bold;' +
-                    'color:#111;' +
-                    'background:rgba(255,255,255,0.88);' +
-                    'border:1px solid #555;' +
-                    'border-radius:4px;' +
-                    'padding:1px 4px;' +
-                    'white-space:nowrap;' +
-                    'transform:translate(-50%, -28px);' +
-                    'box-shadow:0 1px 3px rgba(0,0,0,0.35);' +
-                    'pointer-events:none;' +
-                    '">' + text + '</div>',
-                iconSize: [0, 0]
+                    '<div class="price-badge-blue">' +
+                    '<span class="price-badge-dot"></span>' +
+                    '<span>' + text + '</span>' +
+                    '</div>',
+                iconSize: [76, 26],
+                iconAnchor: [38, 30]
             }});
         }}
 

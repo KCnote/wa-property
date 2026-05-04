@@ -807,19 +807,63 @@ class LightInfoPane(MacroElement):
             <div id="dbscan-info" class="section">
                 <h4>DBSCAN Density View</h4>
                 <p>
-                    DBSCAN finds dense groups automatically. Unlike KMeans, it does not require choosing the number of groups first.
-                    It is useful for finding natural local property zones and outliers.
+                    DBSCAN identifies natural clusters based on density without requiring a predefined number of groups.
+                    It is useful for detecting real market pockets, local patterns, and unusual outlier properties.
                 </p>
+
                 <div class="metric-box">
                     <b>DBSCAN summary</b><br>
                     Detected clusters: {dbscan_cluster_count}<br>
                     Noise / outlier points: {dbscan_noise_count}
                 </div>
-                <div class="legend-row"><span class="swatch" style="background:#777777"></span><span><b>Grey</b> — noise / outlier</span></div>
-                <div class="legend-row"><span class="swatch" style="background:#1f77b4"></span><span><b>Blue and other colours</b> — dense property groups</span></div>
+
+                <div class="legend-row">
+                    <span class="swatch" style="background:#777777"></span>
+                    <span><b>Grey — Noise / Outlier</b><br>
+                    <span class="small-note">
+                        Properties that do not belong to any dense group. These may be unique homes,
+                        unusual listings, or weakly connected market points.
+                    </span></span>
+                </div>
+
+                <div class="legend-row">
+                    <span class="swatch" style="background:#1f77b4"></span>
+                    <span><b>D0 — Main Dense Local Group</b><br>
+                    <span class="small-note">
+                        The strongest and most representative cluster. Properties here share similar
+                        price, size, and location characteristics.
+                    </span></span>
+                </div>
+
+                <div class="legend-row">
+                    <span class="swatch" style="background:#ff7f0e"></span>
+                    <span><b>D1 — Secondary Dense Group</b><br>
+                    <span class="small-note">
+                        Another major cluster with a different property profile compared to D0.
+                    </span></span>
+                </div>
+
+                <div class="legend-row">
+                    <span class="swatch" style="background:#2ca02c"></span>
+                    <span><b>D2 — Distinct Market Pocket</b><br>
+                    <span class="small-note">
+                        A clearly separated group, often representing a different suburb,
+                        pricing tier, or housing style.
+                    </span></span>
+                </div>
+
+                <div class="legend-row">
+                    <span class="swatch" style="background:#d62728"></span>
+                    <span><b>D3 — Smaller Dense Segment</b><br>
+                    <span class="small-note">
+                        A smaller but meaningful cluster. Properties are similar to each other,
+                        but less common across the dataset.
+                    </span></span>
+                </div>
+
                 <p class="small-note">
-                    If almost everything is grey, eps is too small. Increase eps from 0.85 to 1.0, 1.2, or 1.5.
-                    If everything becomes one group, eps is too large.
+                    If almost everything appears grey, <b>eps</b> is too small (increase it).
+                    If everything collapses into one group, <b>eps</b> is too large.
                 </p>
             </div>
 

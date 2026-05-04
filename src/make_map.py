@@ -381,9 +381,10 @@ def format_price_label(price):
 
 
 def price_label_marker(row):
-    """Small always-visible price label above each property marker.
+    """Small price label above each property marker.
 
-    Note: labels add extra HTML. Keep MAX_MAP_POINTS reasonable for S3 static hosting.
+    Labels are added to separate hidden label layers and are only shown
+    when the map is zoomed in enough that clustering is disabled.
     """
     price_text = format_price_label(row["price"])
 
@@ -826,6 +827,43 @@ class LightInfoPane(MacroElement):
         {{% endmacro %}}
         """)
 
+
+class ZoomLabelController(MacroElement):
+    """Show price labels only when the selected layer is zoomed in enough.
+
+    This prevents thousands of labels from being visible while markers are clustered,
+    which keeps the browser much smoother.
+    """
+    def __init__(self, map_name, zoom_threshold, layer_pairs):
+        super().__init__()
+        self._name = "ZoomLabelController"
+        self.map_name = map_name
+        self.zoom_threshold = zoom_threshold
+        self.layer_pairs = layer_pairs
+
+        rules_js = "\n".join(
+            f"""
+            if ({self.map_name}.hasLayer({parent}) && shouldShowLabels) {{
+                if (!{self.map_name}.hasLayer({labels})) {{ {labels}.addTo({self.map_name}); }}
+            }} else {{
+                if ({self.map_name}.hasLayer({labels})) {{ {self.map_name}.removeLayer({labels}); }}
+            }}
+            """
+            for parent, labels in layer_pairs
+        )
+
+        self._template = Template(f"""
+        {{% macro script(this, kwargs) %}}
+        function updateZoomLabels() {{
+            var shouldShowLabels = {self.map_name}.getZoom() >= {self.zoom_threshold};
+            {rules_js}
+        }}
+
+        {self.map_name}.on("zoomend overlayadd overlayremove", updateZoomLabels);
+        setTimeout(updateZoomLabels, 600);
+        {{% endmacro %}}
+        """)
+
 def create_map(df_map, gap_pairs, metrics, pca_metrics, total_rows):
     if df_map.empty:
         raise RuntimeError("No data found from Athena.")
@@ -841,11 +879,13 @@ def create_map(df_map, gap_pairs, metrics, pca_metrics, total_rows):
     deal_layer = folium.FeatureGroup(name="RF Undervalued Candidates", show=False).add_to(m)
     gap_layer = folium.FeatureGroup(name="Local Price Gap Zones", show=False).add_to(m)
 
+    LABEL_ZOOM_THRESHOLD = 14
+
     cluster_options = {
         "showCoverageOnHover": False,
         "removeOutsideVisibleBounds": True,
         "spiderfyOnMaxZoom": False,
-        "disableClusteringAtZoom": 14,
+        "disableClusteringAtZoom": LABEL_ZOOM_THRESHOLD,
         "maxClusterRadius": 110,
     }
 
@@ -863,6 +903,12 @@ def create_map(df_map, gap_pairs, metrics, pca_metrics, total_rows):
         name="PCA Similarity Cluster",
         options=cluster_options,
     ).add_to(pca_layer)
+
+    # Price labels are separate from marker clusters.
+    # They are hidden at low zoom and only displayed when clusters split into individual homes.
+    price_label_layer = folium.FeatureGroup(name="Price Labels", show=False, control=False).add_to(m)
+    house_label_layer = folium.FeatureGroup(name="House Labels", show=False, control=False).add_to(m)
+    pca_label_layer = folium.FeatureGroup(name="PCA Labels", show=False, control=False).add_to(m)
 
     for _, row in df_map.iterrows():
         price = float(row["price"])
@@ -909,11 +955,10 @@ def create_map(df_map, gap_pairs, metrics, pca_metrics, total_rows):
         )
         pca_marker.add_to(pca_cluster)
 
-        # Always-visible price label for each property.
-        # Added to each main view so the label appears when that view is selected.
-        price_label_marker(row).add_to(price_layer)
-        price_label_marker(row).add_to(house_layer)
-        price_label_marker(row).add_to(pca_layer)
+        # Price labels are hidden by default and are shown only at high zoom.
+        price_label_marker(row).add_to(price_label_layer)
+        price_label_marker(row).add_to(house_label_layer)
+        price_label_marker(row).add_to(pca_label_layer)
 
     undervalued = (
         df_map.dropna(subset=["prediction_gap"])
@@ -975,6 +1020,16 @@ def create_map(df_map, gap_pairs, metrics, pca_metrics, total_rows):
         map_rows=len(df_map),
     )
     m.get_root().add_child(info_pane)
+
+    m.get_root().add_child(ZoomLabelController(
+        map_name=m.get_name(),
+        zoom_threshold=LABEL_ZOOM_THRESHOLD,
+        layer_pairs=[
+            (price_layer.get_name(), price_label_layer.get_name()),
+            (house_layer.get_name(), house_label_layer.get_name()),
+            (pca_layer.get_name(), pca_label_layer.get_name()),
+        ],
+    ))
 
     folium.LayerControl(collapsed=False).add_to(m)
     return m

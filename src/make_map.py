@@ -29,7 +29,7 @@ OUTPUT_HTML = "index.html"
 # =========================================================
 # Main reason Folium gets heavy: every marker/popup is embedded into one HTML file.
 # Keep this number small for S3 static hosting.
-MAX_MAP_POINTS = 1800
+MAX_MAP_POINTS = 3000
 MAX_UNDERVALUED_MARKERS = 150
 MAX_GAP_PAIRS = 100
 

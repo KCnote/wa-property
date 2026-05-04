@@ -407,23 +407,6 @@ def add_local_price_gap_zones(df, radius_m=500, min_price_gap=250000, max_pairs=
     df = df.copy()
     df["price_gap_zone"] = False
 
-    anomalies = (
-        df_map[df_map["isolation_flag"] == -1]
-        .sort_values("isolation_score", ascending=True)
-    )
-
-    for _, row in anomalies.iterrows():
-        folium.CircleMarker(
-            location=[row["latitude"], row["longitude"]],
-            radius=8,
-            color="white",
-            fill=True,
-            fill_color=isolation_color(row["isolation_flag"]),
-            fill_opacity=0.95,
-            weight=2,
-            popup=folium.Popup(popup_html(row), max_width=260),
-        ).add_to(isolation_layer)
-
     for pair in gap_pairs:
         df.loc[pair["i_index"], "price_gap_zone"] = True
         df.loc[pair["j_index"], "price_gap_zone"] = True
@@ -1327,23 +1310,6 @@ def create_map(df_map, gap_pairs, metrics, pca_metrics, dbscan_summary, isolatio
             weight=2,
             popup=folium.Popup(popup_html(row), max_width=260),
         ).add_to(deal_layer)
-
-    anomalies = (
-        df_map[df_map["isolation_flag"] == -1]
-        .sort_values("isolation_score", ascending=True)
-    )
-
-    for _, row in anomalies.iterrows():
-        folium.CircleMarker(
-            location=[row["latitude"], row["longitude"]],
-            radius=8,
-            color="white",
-            fill=True,
-            fill_color=isolation_color(row["isolation_flag"]),
-            fill_opacity=0.95,
-            weight=2,
-            popup=folium.Popup(popup_html(row), max_width=260),
-        ).add_to(isolation_layer)
 
     for pair in gap_pairs:
         line_popup = f"""

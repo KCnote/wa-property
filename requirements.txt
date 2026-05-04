@@ -4,3 +4,4 @@ pandas
 pyarrow
 folium
 scikit-learn
+xgboost

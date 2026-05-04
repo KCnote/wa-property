@@ -8,7 +8,7 @@ from jinja2 import Template
 from sklearn.cluster import MiniBatchKMeans, DBSCAN
 from sklearn.preprocessing import StandardScaler
 from sklearn.neighbors import BallTree
-from sklearn.ensemble import RandomForestRegressor
+from sklearn.ensemble import RandomForestRegressor, IsolationForest
 from sklearn.model_selection import train_test_split
 from sklearn.decomposition import PCA
 from sklearn.metrics import mean_absolute_error, r2_score
@@ -239,6 +239,57 @@ def add_dbscan_cluster(df, eps=0.85, min_samples=12):
     return df
 
 
+def add_isolation_forest(df, contamination=0.03):
+    """
+    Isolation Forest detects unusual properties.
+
+    isolation_flag:
+      -1 = anomaly / unusual property
+       1 = normal property
+
+    isolation_score:
+      Lower score = more unusual.
+
+    contamination controls how many rows are treated as anomalies.
+    Example:
+      contamination=0.01  # very strict
+      contamination=0.03  # balanced
+      contamination=0.05  # more anomalies
+    """
+    features = [
+        "latitude", "longitude", "price",
+        "bedrooms", "bathrooms", "garage",
+        "land_area", "floor_area",
+    ]
+
+    model_df = df.dropna(subset=features).copy()
+
+    df = df.copy()
+    df["isolation_flag"] = 1
+    df["isolation_score"] = np.nan
+
+    if len(model_df) < 50:
+        return df
+
+    scaler = StandardScaler()
+    X_scaled = scaler.fit_transform(model_df[features])
+
+    iso = IsolationForest(
+        n_estimators=200,
+        contamination=contamination,
+        random_state=RANDOM_STATE,
+        n_jobs=-1,
+    )
+
+    model_df["isolation_flag"] = iso.fit_predict(X_scaled)
+    model_df["isolation_score"] = iso.decision_function(X_scaled)
+
+    df.loc[model_df.index, "isolation_flag"] = model_df["isolation_flag"].astype(int)
+    df.loc[model_df.index, "isolation_score"] = model_df["isolation_score"].astype(float)
+
+    return df
+
+
 def add_pca_features(df):
     features = [
         "price", "bedrooms", "bathrooms", "garage",
@@ -356,6 +407,23 @@ def add_local_price_gap_zones(df, radius_m=500, min_price_gap=250000, max_pairs=
     df = df.copy()
     df["price_gap_zone"] = False
 
+    anomalies = (
+        df_map[df_map["isolation_flag"] == -1]
+        .sort_values("isolation_score", ascending=True)
+    )
+
+    for _, row in anomalies.iterrows():
+        folium.CircleMarker(
+            location=[row["latitude"], row["longitude"]],
+            radius=8,
+            color="white",
+            fill=True,
+            fill_color=isolation_color(row["isolation_flag"]),
+            fill_opacity=0.95,
+            weight=2,
+            popup=folium.Popup(popup_html(row), max_width=260),
+        ).add_to(isolation_layer)
+
     for pair in gap_pairs:
         df.loc[pair["i_index"], "price_gap_zone"] = True
         df.loc[pair["j_index"], "price_gap_zone"] = True
@@ -399,6 +467,13 @@ def dbscan_color(group):
     ]
 
     return colors[group % len(colors)]
+
+
+def isolation_color(flag):
+    if int(flag) == -1:
+        return "#ff00ff"
+
+    return "#cccccc"
 
 
 def pca_color(score):
@@ -461,6 +536,8 @@ def popup_html(row):
     pred = row.get("predicted_price", np.nan)
     gap = row.get("prediction_gap", np.nan)
     dbscan_group = row.get("dbscan_group", -1)
+    isolation_flag = int(row.get("isolation_flag", 1))
+    isolation_score = row.get("isolation_score", np.nan)
 
     pred_line = ""
 
@@ -468,6 +545,8 @@ def popup_html(row):
         pred_line = f"Predicted: ${pred:,.0f}<br>Gap: ${gap:,.0f}<br>"
 
     dbscan_text = "Outlier / Noise" if int(dbscan_group) == -1 else f"Cluster {int(dbscan_group)}"
+    isolation_text = "Anomaly / Unusual" if isolation_flag == -1 else "Normal"
+    isolation_score_text = "N/A" if pd.isna(isolation_score) else f"{float(isolation_score):.3f}"
 
     return f"""
     <b>{row.get('address', '')}</b><br>
@@ -476,6 +555,8 @@ def popup_html(row):
     {pred_line}
     KMeans Type: {int(row.get('house_group', 0))}<br>
     DBSCAN: {dbscan_text}<br>
+    Isolation Forest: {isolation_text}<br>
+    Anomaly Score: {isolation_score_text}<br>
     Bed/Bath/Garage: {row.get('bedrooms', '')}/{row.get('bathrooms', '')}/{row.get('garage', '')}<br>
     Land: {row.get('land_area', '')} sqm
     """
@@ -663,9 +744,11 @@ class LightInfoPane(MacroElement):
         pca_layer_name,
         deal_layer_name,
         gap_layer_name,
+        isolation_layer_name,
         metrics,
         pca_metrics,
         dbscan_summary,
+        isolation_summary,
         total_rows,
         map_rows,
     ):
@@ -697,6 +780,10 @@ class LightInfoPane(MacroElement):
 
         dbscan_cluster_count = dbscan_summary.get("cluster_count", 0)
         dbscan_noise_count = dbscan_summary.get("noise_count", 0)
+
+        isolation_anomaly_count = isolation_summary.get("anomaly_count", 0) if isolation_summary else 0
+        isolation_normal_count = isolation_summary.get("normal_count", 0) if isolation_summary else 0
+        isolation_contamination = isolation_summary.get("contamination", 0.03) if isolation_summary else 0.03
 
         self._template = Template(f"""
         {{% macro html(this, kwargs) %}}
@@ -867,6 +954,37 @@ class LightInfoPane(MacroElement):
                 </p>
             </div>
 
+            <div id="isolation-info" class="section">
+                <h4>Isolation Forest Anomaly View</h4>
+                <p>
+                    Isolation Forest detects unusual properties based on location, price, room count,
+                    land size, and floor area. It is useful for spotting rare listings, unusual deals,
+                    or properties that do not match the normal market pattern.
+                </p>
+
+                <div class="metric-box">
+                    <b>Isolation Forest summary</b><br>
+                    Detected anomalies: {isolation_anomaly_count}<br>
+                    Normal properties: {isolation_normal_count}<br>
+                    Contamination setting: {isolation_contamination:.1%}
+                </div>
+
+                <div class="legend-row">
+                    <span class="circle-swatch" style="background:#ff00ff"></span>
+                    <span><b>Purple — Anomaly / Unusual property</b><br>
+                    <span class="small-note">
+                        These homes are unusual compared with the broader dataset. They may be unusually
+                        cheap, unusually expensive, unusually large/small, or located differently from
+                        similar properties.
+                    </span></span>
+                </div>
+
+                <p class="small-note">
+                    Lower anomaly score means the property is more unusual. This is not automatically
+                    a bargain signal; compare it with the Random Forest valuation layer.
+                </p>
+            </div>
+
             <div id="pca-info" class="section">
                 <h4>PCA Similarity View</h4>
                 <p>
@@ -932,6 +1050,9 @@ class LightInfoPane(MacroElement):
 
             document.getElementById("gap-info").style.display =
                 {map_name}.hasLayer({gap_layer_name}) ? "block" : "none";
+
+            document.getElementById("isolation-info").style.display =
+                {map_name}.hasLayer({isolation_layer_name}) ? "block" : "none";
         }}
 
         {map_name}.on("overlayadd overlayremove", updateInfoPane);
@@ -1073,7 +1194,7 @@ class ViewportPriceLabelController(MacroElement):
         """)
 
 
-def create_map(df_map, gap_pairs, metrics, pca_metrics, dbscan_summary, total_rows):
+def create_map(df_map, gap_pairs, metrics, pca_metrics, dbscan_summary, isolation_summary, total_rows):
     if df_map.empty:
         raise RuntimeError("No data found from Athena.")
 
@@ -1092,6 +1213,7 @@ def create_map(df_map, gap_pairs, metrics, pca_metrics, dbscan_summary, total_ro
     pca_layer = folium.FeatureGroup(name="PCA Similarity View", show=False).add_to(m)
     deal_layer = folium.FeatureGroup(name="RF Undervalued Candidates", show=False).add_to(m)
     gap_layer = folium.FeatureGroup(name="Local Price Gap Zones", show=False).add_to(m)
+    isolation_layer = folium.FeatureGroup(name="Isolation Forest Anomaly View", show=False).add_to(m)
 
     LABEL_ZOOM_THRESHOLD = 14
 
@@ -1206,6 +1328,23 @@ def create_map(df_map, gap_pairs, metrics, pca_metrics, dbscan_summary, total_ro
             popup=folium.Popup(popup_html(row), max_width=260),
         ).add_to(deal_layer)
 
+    anomalies = (
+        df_map[df_map["isolation_flag"] == -1]
+        .sort_values("isolation_score", ascending=True)
+    )
+
+    for _, row in anomalies.iterrows():
+        folium.CircleMarker(
+            location=[row["latitude"], row["longitude"]],
+            radius=8,
+            color="white",
+            fill=True,
+            fill_color=isolation_color(row["isolation_flag"]),
+            fill_opacity=0.95,
+            weight=2,
+            popup=folium.Popup(popup_html(row), max_width=260),
+        ).add_to(isolation_layer)
+
     for pair in gap_pairs:
         line_popup = f"""
         <b>Local Price Gap</b><br>
@@ -1233,9 +1372,11 @@ def create_map(df_map, gap_pairs, metrics, pca_metrics, dbscan_summary, total_ro
         pca_layer_name=pca_layer.get_name(),
         deal_layer_name=deal_layer.get_name(),
         gap_layer_name=gap_layer.get_name(),
+        isolation_layer_name=isolation_layer.get_name(),
         metrics=metrics,
         pca_metrics=pca_metrics,
         dbscan_summary=dbscan_summary,
+        isolation_summary=isolation_summary,
         total_rows=total_rows,
         map_rows=len(df_map),
     )
@@ -1260,6 +1401,7 @@ def create_map(df_map, gap_pairs, metrics, pca_metrics, dbscan_summary, total_ro
             house_layer.get_name(),
             dbscan_layer.get_name(),
             pca_layer.get_name(),
+            isolation_layer.get_name(),
         ],
     ))
 
@@ -1312,6 +1454,20 @@ def main():
 
     print("DBSCAN summary:", dbscan_summary)
 
+    isolation_contamination = 0.03
+    df = add_isolation_forest(df, contamination=isolation_contamination)
+
+    isolation_anomaly_count = int((df["isolation_flag"] == -1).sum())
+    isolation_normal_count = int((df["isolation_flag"] == 1).sum())
+
+    isolation_summary = {
+        "anomaly_count": isolation_anomaly_count,
+        "normal_count": isolation_normal_count,
+        "contamination": isolation_contamination,
+    }
+
+    print("Isolation Forest summary:", isolation_summary)
+
     df, pca_metrics = add_pca_features(df)
     print("PCA metrics:", pca_metrics)
 
@@ -1333,6 +1489,7 @@ def main():
         metrics=metrics,
         pca_metrics=pca_metrics,
         dbscan_summary=dbscan_summary,
+        isolation_summary=isolation_summary,
         total_rows=total_rows,
     )
 

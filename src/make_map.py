@@ -683,7 +683,7 @@ class LightInfoPane(MacroElement):
         self._template = Template(f"""
         {{% macro html(this, kwargs) %}}
         <style>
-            #info-pane {{
+            #info-pane {{{{
                 position: fixed;
                 top: 80px;
                 left: 20px;
@@ -699,18 +699,18 @@ class LightInfoPane(MacroElement):
                 font-family: Arial, sans-serif;
                 font-size: 13px;
                 line-height: 1.35;
-            }}
-            #info-pane h3 {{ margin: 0 0 8px 0; font-size: 17px; }}
-            #info-pane h4 {{ margin: 13px 0 6px 0; font-size: 14px; }}
-            #info-pane p {{ margin: 6px 0; }}
-            #info-pane .section {{ display: none; border-top: 1px solid #ddd; padding-top: 8px; margin-top: 9px; }}
-            #info-pane .legend-row {{ display:flex; align-items:center; gap:8px; margin:5px 0; }}
-            #info-pane .swatch {{ width:18px; height:14px; border:1px solid #777; flex:0 0 auto; }}
-            #info-pane .circle-swatch {{ width:14px; height:14px; border-radius:50%; border:1px solid #777; flex:0 0 auto; }}
-            #info-pane .line-swatch {{ width:28px; height:4px; background:red; flex:0 0 auto; }}
-            #info-pane .small-note {{ color:#555; font-size:12px; }}
-            #info-pane .metric-box {{ background:#f7f7f7; border:1px solid #ddd; border-radius:7px; padding:7px; margin:6px 0; }}
-            #info-pane ol {{ padding-left: 20px; margin: 6px 0; }}
+            }}}}
+            #info-pane h3 {{{{ margin: 0 0 8px 0; font-size: 17px; }}}}
+            #info-pane h4 {{{{ margin: 13px 0 6px 0; font-size: 14px; }}}}
+            #info-pane p {{{{ margin: 6px 0; }}}}
+            #info-pane .section {{{{ display: none; border-top: 1px solid #ddd; padding-top: 8px; margin-top: 9px; }}}}
+            #info-pane .legend-row {{{{ display:flex; align-items:center; gap:8px; margin:5px 0; }}}}
+            #info-pane .swatch {{{{ width:18px; height:14px; border:1px solid #777; flex:0 0 auto; }}}}
+            #info-pane .circle-swatch {{{{ width:14px; height:14px; border-radius:50%; border:1px solid #777; flex:0 0 auto; }}}}
+            #info-pane .line-swatch {{{{ width:28px; height:4px; background:red; flex:0 0 auto; }}}}
+            #info-pane .small-note {{{{ color:#555; font-size:12px; }}}}
+            #info-pane .metric-box {{{{ background:#f7f7f7; border:1px solid #ddd; border-radius:7px; padding:7px; margin:6px 0; }}}}
+            #info-pane ol {{{{ padding-left: 20px; margin: 6px 0; }}}}
         </style>
 
         <div id="info-pane">

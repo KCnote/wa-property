@@ -241,116 +241,140 @@ def add_dbscan_cluster(df, eps=0.85, min_samples=12):
     return df
 
 
-def add_isolation_forest(df, contamination=0.03):
+def add_isolation_forest(df, contamination=0.03, radius_m=1500, min_neighbors=10, cheap_threshold=-0.15, expensive_threshold=0.15):
     """
-    Improved Isolation Forest for property anomaly detection.
+    Local price anomaly detection using Isolation Forest.
 
-    This version combines:
-      Method 1: price/size/room-based anomaly detection without raw latitude/longitude
-      Method 3: regional normalisation using suburb median and local-neighbour median
+    This version is designed for map interpretation:
+      - latitude/longitude are NOT used as direct model features
+      - location is used only to define a fixed nearby area
+      - anomaly means: price is unusual compared with nearby properties
 
-    It is more intuitive than using raw latitude/longitude because it asks:
-      - Is this property unusual compared with similar-sized homes?
-      - Is its price unusual compared with the suburb?
-      - Is its price unusual compared with nearby properties?
+    Local area rule:
+      - nearby properties within radius_m metres
+      - at least min_neighbors nearby homes required
+
+    Main anomaly features:
+      - price_to_local_median_pct
+      - price_per_sqm_to_local_median_pct
+      - price_to_suburb_median_pct
+      - price_per_sqm_to_suburb_median_pct
 
     isolation_flag:
-      -1 = anomaly / unusual property
-       1 = normal property
+      -1 = local price anomaly
+       1 = normal
 
-    isolation_score:
-      Lower score = more unusual.
+    local_price_anomaly_type:
+      - cheap_local_anomaly
+      - expensive_local_anomaly
+      - mixed_local_anomaly
+      - normal
     """
     df = df.copy()
 
     df["isolation_flag"] = 1
     df["isolation_score"] = np.nan
     df["price_per_sqm"] = np.nan
-    df["price_to_suburb_median_pct"] = np.nan
+    df["local_median_price"] = np.nan
+    df["local_median_price_per_sqm"] = np.nan
     df["price_to_local_median_pct"] = np.nan
+    df["price_per_sqm_to_local_median_pct"] = np.nan
+    df["price_to_suburb_median_pct"] = np.nan
+    df["price_per_sqm_to_suburb_median_pct"] = np.nan
+    df["local_neighbor_count"] = 0
+    df["local_price_anomaly_type"] = "normal"
     df["isolation_reason"] = "Normal"
 
-    base_cols = [
-        "price", "bedrooms", "bathrooms", "garage",
-        "land_area", "floor_area", "latitude", "longitude",
+    required = [
+        "price", "land_area", "latitude", "longitude",
+        "bedrooms", "bathrooms", "garage", "floor_area",
     ]
 
-    if "suburb" in df.columns:
-        base_cols.append("suburb")
-
-    model_df = df.dropna(subset=[c for c in base_cols if c != "suburb"]).copy()
+    model_df = df.dropna(subset=required).copy()
+    model_df = model_df[(model_df["price"] > 0) & (model_df["land_area"] > 0)].copy()
 
     if len(model_df) < 50:
         return df
 
-    # -----------------------------
-    # 1) Property-level value features
-    # -----------------------------
-    model_df["price_per_sqm"] = model_df["price"] / model_df["land_area"].replace(0, np.nan)
-    model_df["floor_to_land_ratio"] = model_df["floor_area"] / model_df["land_area"].replace(0, np.nan)
+    model_df["price_per_sqm"] = model_df["price"] / model_df["land_area"]
 
-    # -----------------------------
-    # 2) Suburb-level normalisation
-    # -----------------------------
+    # ------------------------------------------------------------
+    # 1) Suburb baseline. This is not the main rule, but helps when
+    #    local neighbour counts are small or suburbs have clear pricing bands.
+    # ------------------------------------------------------------
     if "suburb" in model_df.columns:
-        suburb_median = model_df.groupby("suburb")["price"].transform("median")
-        model_df["price_to_suburb_median_pct"] = (
-            model_df["price"] - suburb_median
-        ) / suburb_median.replace(0, np.nan)
+        suburb_price_median = model_df.groupby("suburb")["price"].transform("median")
+        suburb_ppsqm_median = model_df.groupby("suburb")["price_per_sqm"].transform("median")
     else:
-        model_df["price_to_suburb_median_pct"] = 0.0
+        suburb_price_median = pd.Series(np.nanmedian(model_df["price"]), index=model_df.index)
+        suburb_ppsqm_median = pd.Series(np.nanmedian(model_df["price_per_sqm"]), index=model_df.index)
 
-    # -----------------------------
-    # 3) Nearby-property normalisation
-    # -----------------------------
-    # For each property, compare price against the median price of nearby homes.
-    # This makes anomalies easier to understand on a map.
+    model_df["price_to_suburb_median_pct"] = (
+        model_df["price"] - suburb_price_median
+    ) / suburb_price_median.replace(0, np.nan)
+
+    model_df["price_per_sqm_to_suburb_median_pct"] = (
+        model_df["price_per_sqm"] - suburb_ppsqm_median
+    ) / suburb_ppsqm_median.replace(0, np.nan)
+
+    # ------------------------------------------------------------
+    # 2) Fixed local area baseline.
+    #    This is the key part: compare each property to homes within
+    #    radius_m metres. Raw lat/lon are not fed to the model.
+    # ------------------------------------------------------------
     coords_rad = np.radians(model_df[["latitude", "longitude"]].to_numpy())
     prices = model_df["price"].to_numpy(dtype=float)
+    ppsqm = model_df["price_per_sqm"].to_numpy(dtype=float)
 
     tree = BallTree(coords_rad, metric="haversine")
     earth_radius_m = 6371000
-    radius_m = 1500
     radius_rad = radius_m / earth_radius_m
-
     neighbors = tree.query_radius(coords_rad, r=radius_rad)
-    local_medians = np.full(len(model_df), np.nan)
+
+    local_price_medians = np.full(len(model_df), np.nan)
+    local_ppsqm_medians = np.full(len(model_df), np.nan)
+    local_neighbor_counts = np.zeros(len(model_df), dtype=int)
 
     for i, neighbor_idx in enumerate(neighbors):
-        # Remove itself from the neighbour list.
         neighbor_idx = neighbor_idx[neighbor_idx != i]
+        local_neighbor_counts[i] = len(neighbor_idx)
 
-        if len(neighbor_idx) >= 8:
-            local_medians[i] = np.median(prices[neighbor_idx])
+        if len(neighbor_idx) >= min_neighbors:
+            local_price_medians[i] = np.median(prices[neighbor_idx])
+            local_ppsqm_medians[i] = np.median(ppsqm[neighbor_idx])
 
-    global_median = np.nanmedian(prices)
-    local_medians = np.where(np.isnan(local_medians), global_median, local_medians)
+    model_df["local_neighbor_count"] = local_neighbor_counts
+    model_df["local_median_price"] = local_price_medians
+    model_df["local_median_price_per_sqm"] = local_ppsqm_medians
 
-    model_df["local_median_price"] = local_medians
     model_df["price_to_local_median_pct"] = (
         model_df["price"] - model_df["local_median_price"]
-    ) / model_df["local_median_price"].replace(0, np.nan)
+    ) / pd.Series(model_df["local_median_price"], index=model_df.index).replace(0, np.nan)
 
-    # -----------------------------
-    # 4) Isolation Forest features
-    # -----------------------------
-    # No raw latitude/longitude here. Location is used only to calculate local median.
+    model_df["price_per_sqm_to_local_median_pct"] = (
+        model_df["price_per_sqm"] - model_df["local_median_price_per_sqm"]
+    ) / pd.Series(model_df["local_median_price_per_sqm"], index=model_df.index).replace(0, np.nan)
+
+    # Only train on rows that have enough nearby properties.
+    # This avoids global fallback values that make the map hard to interpret.
     features = [
-        "price",
-        "price_per_sqm",
-        "price_to_suburb_median_pct",
         "price_to_local_median_pct",
-        "bedrooms",
-        "bathrooms",
-        "garage",
-        "land_area",
-        "floor_area",
-        "floor_to_land_ratio",
+        "price_per_sqm_to_local_median_pct",
+        "price_to_suburb_median_pct",
+        "price_per_sqm_to_suburb_median_pct",
     ]
 
     model_df = model_df.replace([np.inf, -np.inf], np.nan).dropna(subset=features).copy()
 
     if len(model_df) < 50:
+        # Still copy useful local baseline fields back for popup/debugging.
+        copy_cols = [
+            "price_per_sqm", "local_median_price", "local_median_price_per_sqm",
+            "price_to_local_median_pct", "price_per_sqm_to_local_median_pct",
+            "price_to_suburb_median_pct", "price_per_sqm_to_suburb_median_pct",
+            "local_neighbor_count",
+        ]
+        df.loc[model_df.index, copy_cols] = model_df[copy_cols]
         return df
 
     scaler = StandardScaler()
@@ -366,35 +390,57 @@ def add_isolation_forest(df, contamination=0.03):
     model_df["isolation_flag"] = iso.fit_predict(X_scaled)
     model_df["isolation_score"] = iso.decision_function(X_scaled)
 
-    # Explain why each anomaly was considered unusual.
-    z = pd.DataFrame(X_scaled, index=model_df.index, columns=features)
-    reason_map = {
-        "price": "unusual absolute price",
-        "price_per_sqm": "unusual price per sqm",
-        "price_to_suburb_median_pct": "unusual price vs suburb median",
-        "price_to_local_median_pct": "unusual price vs nearby homes",
-        "bedrooms": "unusual bedroom count",
-        "bathrooms": "unusual bathroom count",
-        "garage": "unusual garage count",
-        "land_area": "unusual land size",
-        "floor_area": "unusual floor area",
-        "floor_to_land_ratio": "unusual building-to-land ratio",
-    }
+    # Classify local price anomaly direction.
+    local_gap = model_df["price_to_local_median_pct"]
+    pp_gap = model_df["price_per_sqm_to_local_median_pct"]
 
-    strongest_feature = z.abs().idxmax(axis=1)
-    model_df["isolation_reason"] = strongest_feature.map(reason_map).fillna("unusual feature combination")
-    model_df.loc[model_df["isolation_flag"] == 1, "isolation_reason"] = "Normal"
+    anomaly_mask = model_df["isolation_flag"] == -1
+    cheap_mask = anomaly_mask & ((local_gap <= cheap_threshold) | (pp_gap <= cheap_threshold))
+    expensive_mask = anomaly_mask & ((local_gap >= expensive_threshold) | (pp_gap >= expensive_threshold))
 
-    output_cols = [
-        "isolation_flag",
-        "isolation_score",
-        "price_per_sqm",
-        "price_to_suburb_median_pct",
-        "price_to_local_median_pct",
-        "isolation_reason",
+    model_df.loc[anomaly_mask, "local_price_anomaly_type"] = "mixed_local_anomaly"
+    model_df.loc[cheap_mask, "local_price_anomaly_type"] = "cheap_local_anomaly"
+    model_df.loc[expensive_mask, "local_price_anomaly_type"] = "expensive_local_anomaly"
+
+    # If both cheap and expensive signals occur due to conflicting total price vs price/sqm,
+    # keep it as mixed because the interpretation needs manual inspection.
+    both_mask = cheap_mask & expensive_mask
+    model_df.loc[both_mask, "local_price_anomaly_type"] = "mixed_local_anomaly"
+
+    def reason_for(row):
+        if int(row["isolation_flag"]) != -1:
+            return "Normal"
+
+        parts = []
+        if row["price_to_local_median_pct"] <= cheap_threshold:
+            parts.append("cheaper than nearby median")
+        elif row["price_to_local_median_pct"] >= expensive_threshold:
+            parts.append("more expensive than nearby median")
+
+        if row["price_per_sqm_to_local_median_pct"] <= cheap_threshold:
+            parts.append("lower $/sqm than nearby homes")
+        elif row["price_per_sqm_to_local_median_pct"] >= expensive_threshold:
+            parts.append("higher $/sqm than nearby homes")
+
+        if row["price_to_suburb_median_pct"] <= cheap_threshold:
+            parts.append("cheaper than suburb median")
+        elif row["price_to_suburb_median_pct"] >= expensive_threshold:
+            parts.append("more expensive than suburb median")
+
+        return "; ".join(parts) if parts else "unusual local price pattern"
+
+    model_df["isolation_reason"] = model_df.apply(reason_for, axis=1)
+
+    copy_cols = [
+        "isolation_flag", "isolation_score", "price_per_sqm",
+        "local_median_price", "local_median_price_per_sqm",
+        "price_to_local_median_pct", "price_per_sqm_to_local_median_pct",
+        "price_to_suburb_median_pct", "price_per_sqm_to_suburb_median_pct",
+        "local_neighbor_count", "local_price_anomaly_type", "isolation_reason",
     ]
 
-    df.loc[model_df.index, output_cols] = model_df[output_cols]
+    df.loc[model_df.index, copy_cols] = model_df[copy_cols]
+    df["isolation_flag"] = df["isolation_flag"].astype(int)
 
     return df
 
@@ -583,11 +629,24 @@ def dbscan_color(group):
     return colors[group % len(colors)]
 
 
-def isolation_color(flag):
-    if int(flag) == -1:
-        return "#ff00ff"
+def isolation_color(row_or_flag):
+    """Color by local price anomaly direction."""
+    if isinstance(row_or_flag, pd.Series):
+        flag = int(row_or_flag.get("isolation_flag", 1))
+        anomaly_type = row_or_flag.get("local_price_anomaly_type", "normal")
+    else:
+        flag = int(row_or_flag)
+        anomaly_type = "mixed_local_anomaly" if flag == -1 else "normal"
 
-    return "#cccccc"
+    if flag != -1:
+        return "#cccccc"
+
+    if anomaly_type == "cheap_local_anomaly":
+        return "#00cc44"  # green
+    if anomaly_type == "expensive_local_anomaly":
+        return "#ff3333"  # red
+
+    return "#ff00ff"      # purple / mixed
 
 
 def pca_color(score):
@@ -653,9 +712,14 @@ def popup_html(row):
     isolation_flag = int(row.get("isolation_flag", 1))
     isolation_score = row.get("isolation_score", np.nan)
     isolation_reason = row.get("isolation_reason", "Normal")
+    anomaly_type = row.get("local_price_anomaly_type", "normal")
+
     price_per_sqm = row.get("price_per_sqm", np.nan)
-    suburb_gap_pct = row.get("price_to_suburb_median_pct", np.nan)
+    local_median = row.get("local_median_price", np.nan)
     local_gap_pct = row.get("price_to_local_median_pct", np.nan)
+    local_ppsqm_gap_pct = row.get("price_per_sqm_to_local_median_pct", np.nan)
+    suburb_gap_pct = row.get("price_to_suburb_median_pct", np.nan)
+    neighbor_count = row.get("local_neighbor_count", 0)
 
     pred_line = ""
 
@@ -663,11 +727,23 @@ def popup_html(row):
         pred_line = f"Predicted: ${pred:,.0f}<br>Gap: ${gap:,.0f}<br>"
 
     dbscan_text = "Outlier / Noise" if int(dbscan_group) == -1 else f"Cluster {int(dbscan_group)}"
-    isolation_text = "Anomaly / Unusual" if isolation_flag == -1 else "Normal"
+
+    if isolation_flag == -1:
+        if anomaly_type == "cheap_local_anomaly":
+            isolation_text = "Local Cheap Price Anomaly"
+        elif anomaly_type == "expensive_local_anomaly":
+            isolation_text = "Local Expensive Price Anomaly"
+        else:
+            isolation_text = "Mixed Local Price Anomaly"
+    else:
+        isolation_text = "Normal"
+
     isolation_score_text = "N/A" if pd.isna(isolation_score) else f"{float(isolation_score):.3f}"
     price_per_sqm_text = "N/A" if pd.isna(price_per_sqm) else f"${float(price_per_sqm):,.0f}/sqm"
-    suburb_gap_text = "N/A" if pd.isna(suburb_gap_pct) else f"{float(suburb_gap_pct) * 100:+.1f}%"
+    local_median_text = "N/A" if pd.isna(local_median) else f"${float(local_median):,.0f}"
     local_gap_text = "N/A" if pd.isna(local_gap_pct) else f"{float(local_gap_pct) * 100:+.1f}%"
+    local_ppsqm_gap_text = "N/A" if pd.isna(local_ppsqm_gap_pct) else f"{float(local_ppsqm_gap_pct) * 100:+.1f}%"
+    suburb_gap_text = "N/A" if pd.isna(suburb_gap_pct) else f"{float(suburb_gap_pct) * 100:+.1f}%"
 
     return f"""
     <b>{row.get('address', '')}</b><br>
@@ -680,8 +756,11 @@ def popup_html(row):
     Anomaly Score: {isolation_score_text}<br>
     Reason: {isolation_reason}<br>
     Price per sqm: {price_per_sqm_text}<br>
+    Local median price: {local_median_text}<br>
+    Vs nearby median: {local_gap_text}<br>
+    Vs nearby $/sqm: {local_ppsqm_gap_text}<br>
     Vs suburb median: {suburb_gap_text}<br>
-    Vs nearby homes: {local_gap_text}<br>
+    Nearby count: {int(neighbor_count) if not pd.isna(neighbor_count) else 0}<br>
     Bed/Bath/Garage: {row.get('bedrooms', '')}/{row.get('bathrooms', '')}/{row.get('garage', '')}<br>
     Land: {row.get('land_area', '')} sqm
     """
@@ -1082,9 +1161,8 @@ class LightInfoPane(MacroElement):
             <div id="isolation-info" class="section">
                 <h4>Isolation Forest Anomaly View</h4>
                 <p>
-                    Isolation Forest detects unusual properties using price, price per sqm, room count,
-                    land size, floor area, suburb-median gap, and nearby-home price gap. Raw latitude/longitude
-                    are not used directly, so this layer is more focused on price and property-profile anomalies.
+                    Isolation Forest detects local price anomalies inside a fixed nearby area. It compares each property with homes within the selected radius using price, price per sqm, suburb median gap, and nearby median gap. It is useful for spotting rare listings, unusual deals,
+                    or properties that do not match the normal market pattern.
                 </p>
 
                 <div class="metric-box">
@@ -1096,17 +1174,14 @@ class LightInfoPane(MacroElement):
 
                 <div class="legend-row">
                     <span class="circle-swatch" style="background:#ff00ff"></span>
-                    <span><b>Purple — Anomaly / Unusual property</b><br>
+                    <span><b>Green — Cheap local price anomaly<br>Red — Expensive local price anomaly<br>Purple — Mixed local price anomaly</b><br>
                     <span class="small-note">
-                        These homes have an unusual price/size/room combination, or their price is unusual
-                        compared with the suburb median or nearby homes. Check the popup reason field to see
-                        what made each property unusual.
+                        Green means cheaper than nearby/local median patterns. Red means more expensive than nearby/local median patterns. Purple means mixed signals, such as total price and price per sqm disagreeing.
                     </span></span>
                 </div>
 
                 <p class="small-note">
-                    Lower anomaly score means the property is more unusual. This is not automatically
-                    a bargain signal; use the popup fields and Random Forest valuation layer together.
+                    Lower anomaly score means the property is more unusual inside its local price area. This is easier to interpret than global anomaly detection, but still needs manual checking.
                 </p>
             </div>
 
@@ -1442,7 +1517,7 @@ def create_map(df_map, gap_pairs, metrics, pca_metrics, dbscan_summary, isolatio
             radius=radius + 3 if isolation_flag == -1 else radius + 1,
             color="#111111" if isolation_flag == -1 else "#999999",
             fill=True,
-            fill_color=isolation_color(isolation_flag),
+            fill_color=isolation_color(row),
             fill_opacity=0.95 if isolation_flag == -1 else 0.25,
             weight=2 if isolation_flag == -1 else 1,
             popup=folium.Popup(html, max_width=260),
@@ -1603,16 +1678,29 @@ def main():
     print("DBSCAN summary:", dbscan_summary)
 
     isolation_contamination = 0.03
-    df = add_isolation_forest(df, contamination=isolation_contamination)
+    df = add_isolation_forest(
+        df,
+        contamination=isolation_contamination,
+        radius_m=1500,
+        min_neighbors=10,
+        cheap_threshold=-0.15,
+        expensive_threshold=0.15,
+    )
 
     isolation_anomaly_count = int((df["isolation_flag"] == -1).sum())
     isolation_normal_count = int((df["isolation_flag"] == 1).sum())
+    cheap_anomaly_count = int((df["local_price_anomaly_type"] == "cheap_local_anomaly").sum())
+    expensive_anomaly_count = int((df["local_price_anomaly_type"] == "expensive_local_anomaly").sum())
+    mixed_anomaly_count = int((df["local_price_anomaly_type"] == "mixed_local_anomaly").sum())
 
     isolation_summary = {
         "anomaly_count": isolation_anomaly_count,
         "normal_count": isolation_normal_count,
         "contamination": isolation_contamination,
-        "method": "price_profile_plus_regional_normalisation",
+        "cheap_anomaly_count": cheap_anomaly_count,
+        "expensive_anomaly_count": expensive_anomaly_count,
+        "mixed_anomaly_count": mixed_anomaly_count,
+        "radius_m": 1500,
     }
 
     print("Isolation Forest summary:", isolation_summary)

@@ -483,10 +483,10 @@ def deal_color(row):
     if pd.isna(gap_pct):
         return "#999999"
 
-    if gap_pct > 0.10:
+    if gap_pct > 0.02:
         return "#1a9850"
 
-    if gap_pct < -0.10:
+    if gap_pct < -0.02:
         return "#d73027"
 
     return "#2b83ba"
@@ -996,9 +996,9 @@ class LightInfoPane(MacroElement):
                 </div>
                 <h4>Top Features</h4>
                 <ol>{feature_html}</ol>
-                <div class="legend-row"><span class="circle-swatch" style="background:#1a9850"></span><span><b>Green</b> — actual price is more than 10% below predicted value</span></div>
+                <div class="legend-row"><span class="circle-swatch" style="background:#1a9850"></span><span><b>Green</b> — actual price is more than 2% below predicted value</span></div>
                 <div class="legend-row"><span class="circle-swatch" style="background:#2b83ba"></span><span><b>Blue</b> — close to predicted value</span></div>
-                <div class="legend-row"><span class="circle-swatch" style="background:#d73027"></span><span><b>Red</b> — actual price is more than 10% above predicted value</span></div>
+                <div class="legend-row"><span class="circle-swatch" style="background:#d73027"></span><span><b>Red</b> — actual price is more than 2% above predicted value</span></div>
             </div>
 
             <div id="gap-info" class="section">

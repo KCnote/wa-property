@@ -335,21 +335,43 @@ def select_map_points(df):
     if len(df) <= MAX_MAP_POINTS:
         return df
 
-    top_undervalued = (
-        df.dropna(subset=["prediction_gap"])
-        .sort_values("prediction_gap", ascending=False)
-        .head(MAX_UNDERVALUED_MARKERS)
-    )
+    important_parts = []
 
-    remaining = df.drop(index=top_undervalued.index, errors="ignore")
-    sample_n = max(0, MAX_MAP_POINTS - len(top_undervalued))
+    # 1) Always keep the strongest Random Forest undervalued candidates.
+    if "prediction_gap" in df.columns:
+        top_undervalued = (
+            df.dropna(subset=["prediction_gap"])
+            .sort_values("prediction_gap", ascending=False)
+            .head(MAX_UNDERVALUED_MARKERS)
+        )
+        important_parts.append(top_undervalued)
+
+    # 2) Always keep Isolation Forest anomalies.
+    # Without this, anomalies can disappear from the map because df_map is sampled.
+    if "isolation_flag" in df.columns:
+        anomalies = df[df["isolation_flag"] == -1].copy()
+
+        if "isolation_score" in anomalies.columns:
+            anomalies = anomalies.sort_values("isolation_score", ascending=True)
+
+        # Keep all anomalies if possible. If there are too many, keep the strongest ones.
+        anomalies = anomalies.head(min(600, len(anomalies)))
+        important_parts.append(anomalies)
+
+    if important_parts:
+        important = pd.concat(important_parts).drop_duplicates()
+    else:
+        important = df.iloc[0:0].copy()
+
+    remaining = df.drop(index=important.index, errors="ignore")
+    sample_n = max(0, MAX_MAP_POINTS - len(important))
 
     sampled = remaining.sample(
         n=min(sample_n, len(remaining)),
         random_state=RANDOM_STATE,
     )
 
-    return pd.concat([top_undervalued, sampled]).sort_index()
+    return pd.concat([important, sampled]).drop_duplicates().sort_index()
 
 
 def add_local_price_gap_zones(df, radius_m=500, min_price_gap=250000, max_pairs=MAX_GAP_PAIRS):
@@ -1295,6 +1317,23 @@ def create_map(df_map, gap_pairs, metrics, pca_metrics, dbscan_summary, isolatio
         )
         pca_marker.add_to(pca_cluster)
 
+        isolation_flag = int(row.get("isolation_flag", 1))
+
+        isolation_marker = folium.CircleMarker(
+            location=[row["latitude"], row["longitude"]],
+            radius=radius + 3 if isolation_flag == -1 else radius + 1,
+            color="#111111" if isolation_flag == -1 else "#999999",
+            fill=True,
+            fill_color=isolation_color(isolation_flag),
+            fill_opacity=0.95 if isolation_flag == -1 else 0.25,
+            weight=2 if isolation_flag == -1 else 1,
+            popup=folium.Popup(html, max_width=260),
+        )
+        isolation_marker.options["price"] = price
+        isolation_marker.options["houseGroup"] = int(row["house_group"])
+        isolation_marker.options["dbscanGroup"] = int(row["dbscan_group"])
+        isolation_marker.add_to(isolation_layer)
+
     deal_valid = df_map.dropna(subset=["prediction_gap_pct"]).copy()
     per_group = max(1, MAX_DEAL_MARKERS // 3)
 
@@ -1464,6 +1503,7 @@ def main():
 
     df_map = select_map_points(df)
     print("Displayed map rows:", len(df_map))
+    print("Displayed Isolation Forest anomalies:", int((df_map["isolation_flag"] == -1).sum()))
 
     df_map, gap_pairs = add_local_price_gap_zones(
         df_map,

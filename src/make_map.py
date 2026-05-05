@@ -26,8 +26,10 @@ OUTPUT_HTML = "index.html"
 
 MAX_MAP_POINTS = 3000
 MAX_UNDERVALUED_MARKERS = 150
+MAX_DEAL_MARKERS = 300
 MAX_GAP_PAIRS = 100
 
+DEAL_THRESHOLD = 0.05
 RANDOM_STATE = 42
 
 
@@ -136,7 +138,7 @@ def train_random_forest(df):
     all_pred = model.predict(X)
     model_df["predicted_price"] = all_pred
     model_df["prediction_gap"] = model_df["predicted_price"] - model_df["price"]
-    model_df["prediction_gap_pct"] = model_df["prediction_gap"] / model_df["price"]
+    model_df["prediction_gap_pct"] = model_df["prediction_gap"] / model_df["predicted_price"]
 
     df["predicted_price"] = np.nan
     df["prediction_gap"] = np.nan
@@ -483,10 +485,10 @@ def deal_color(row):
     if pd.isna(gap_pct):
         return "#999999"
 
-    if gap_pct > 0.02:
+    if gap_pct > DEAL_THRESHOLD:
         return "#1a9850"
 
-    if gap_pct < -0.02:
+    if gap_pct < -DEAL_THRESHOLD:
         return "#d73027"
 
     return "#2b83ba"
@@ -996,9 +998,9 @@ class LightInfoPane(MacroElement):
                 </div>
                 <h4>Top Features</h4>
                 <ol>{feature_html}</ol>
-                <div class="legend-row"><span class="circle-swatch" style="background:#1a9850"></span><span><b>Green</b> — actual price is more than 2% below predicted value</span></div>
-                <div class="legend-row"><span class="circle-swatch" style="background:#2b83ba"></span><span><b>Blue</b> — close to predicted value</span></div>
-                <div class="legend-row"><span class="circle-swatch" style="background:#d73027"></span><span><b>Red</b> — actual price is more than 2% above predicted value</span></div>
+                <div class="legend-row"><span class="circle-swatch" style="background:#1a9850"></span><span><b>Green</b> — actual price is more than 5% below predicted value</span></div>
+                <div class="legend-row"><span class="circle-swatch" style="background:#2b83ba"></span><span><b>Blue</b> — close to predicted value (±5%)</span></div>
+                <div class="legend-row"><span class="circle-swatch" style="background:#d73027"></span><span><b>Red</b> — actual price is more than 5% above predicted value</span></div>
             </div>
 
             <div id="gap-info" class="section">
@@ -1194,7 +1196,7 @@ def create_map(df_map, gap_pairs, metrics, pca_metrics, dbscan_summary, isolatio
     house_layer = folium.FeatureGroup(name="KMeans House Classification View", show=False).add_to(m)
     dbscan_layer = folium.FeatureGroup(name="DBSCAN Density View", show=False).add_to(m)
     pca_layer = folium.FeatureGroup(name="PCA Similarity View", show=False).add_to(m)
-    deal_layer = folium.FeatureGroup(name="RF Undervalued Candidates", show=False).add_to(m)
+    deal_layer = folium.FeatureGroup(name="RF Valuation Candidates", show=False).add_to(m)
     gap_layer = folium.FeatureGroup(name="Local Price Gap Zones", show=False).add_to(m)
     isolation_layer = folium.FeatureGroup(name="Isolation Forest Anomaly View", show=False).add_to(m)
 
@@ -1293,13 +1295,36 @@ def create_map(df_map, gap_pairs, metrics, pca_metrics, dbscan_summary, isolatio
         )
         pca_marker.add_to(pca_cluster)
 
+    deal_valid = df_map.dropna(subset=["prediction_gap_pct"]).copy()
+    per_group = max(1, MAX_DEAL_MARKERS // 3)
+
     undervalued = (
-        df_map.dropna(subset=["prediction_gap"])
-        .sort_values("prediction_gap", ascending=False)
-        .head(MAX_UNDERVALUED_MARKERS)
+        deal_valid[deal_valid["prediction_gap_pct"] > DEAL_THRESHOLD]
+        .sort_values("prediction_gap_pct", ascending=False)
+        .head(per_group)
     )
 
-    for _, row in undervalued.iterrows():
+    normal = (
+        deal_valid[deal_valid["prediction_gap_pct"].abs() <= DEAL_THRESHOLD]
+        .assign(abs_gap_pct=lambda x: x["prediction_gap_pct"].abs())
+        .sort_values("abs_gap_pct", ascending=True)
+        .head(per_group)
+        .drop(columns=["abs_gap_pct"], errors="ignore")
+    )
+
+    overvalued = (
+        deal_valid[deal_valid["prediction_gap_pct"] < -DEAL_THRESHOLD]
+        .sort_values("prediction_gap_pct", ascending=True)
+        .head(per_group)
+    )
+
+    deal_rows = (
+        pd.concat([undervalued, normal, overvalued])
+        .drop_duplicates()
+        .head(MAX_DEAL_MARKERS)
+    )
+
+    for _, row in deal_rows.iterrows():
         folium.CircleMarker(
             location=[row["latitude"], row["longitude"]],
             radius=7,

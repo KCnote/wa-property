@@ -28,6 +28,7 @@ MAX_MAP_POINTS = 3000
 MAX_UNDERVALUED_MARKERS = 150
 MAX_DEAL_MARKERS = 300
 MAX_GAP_PAIRS = 100
+MAX_SHAP_EXPLANATION_ROWS = 5000
 
 DEAL_THRESHOLD = 0.05
 RANDOM_STATE = 42
@@ -104,14 +105,32 @@ def train_random_forest(df):
     available_features = [c for c in rf_features if c in df.columns]
     model_df = df.dropna(subset=available_features + ["price"]).copy()
 
+    shap_cols = [
+        "shap_base_value",
+        "shap_total_effect",
+        "shap_top_positive",
+        "shap_top_negative",
+        "shap_explanation",
+        "shap_dominant_feature",
+        "shap_dominant_value",
+    ]
+
+    for col in ["predicted_price", "prediction_gap", "prediction_gap_pct"] + shap_cols:
+        df[col] = np.nan
+
+    df["shap_top_positive"] = "N/A"
+    df["shap_top_negative"] = "N/A"
+    df["shap_explanation"] = "N/A"
+    df["shap_dominant_feature"] = "N/A"
+
     if len(model_df) < 100:
-        df["predicted_price"] = np.nan
-        df["prediction_gap"] = np.nan
-        df["prediction_gap_pct"] = np.nan
         return df, {
             "mae": None,
             "r2": None,
             "features": [],
+            "shap_available": False,
+            "shap_summary_features": [],
+            "shap_error": "Not enough data",
         }
 
     X = model_df[available_features]
@@ -140,29 +159,119 @@ def train_random_forest(df):
     model_df["prediction_gap"] = model_df["predicted_price"] - model_df["price"]
     model_df["prediction_gap_pct"] = model_df["prediction_gap"] / model_df["predicted_price"]
 
-    df["predicted_price"] = np.nan
-    df["prediction_gap"] = np.nan
-    df["prediction_gap_pct"] = np.nan
-
-    df.loc[
-        model_df.index,
-        ["predicted_price", "prediction_gap", "prediction_gap_pct"]
-    ] = model_df[["predicted_price", "prediction_gap", "prediction_gap_pct"]]
-
     importance = sorted(
         zip(available_features, model.feature_importances_),
         key=lambda x: x[1],
         reverse=True,
     )
 
+    shap_available = False
+    shap_error = None
+    shap_summary_features = []
+
+    def money_effect(v):
+        if pd.isna(v):
+            return "N/A"
+        sign = "+" if float(v) >= 0 else "-"
+        return f"{sign}${abs(float(v)):,.0f}"
+
+    # ------------------------------------------------------------
+    # SHAP explanation for Random Forest prediction.
+    # SHAP tells which features pushed the predicted price up/down.
+    # Example:
+    #   floor_area: +$120k
+    #   cbd_dist:   -$80k
+    # ------------------------------------------------------------
+    try:
+        import shap
+
+        if len(model_df) > MAX_SHAP_EXPLANATION_ROWS:
+            shap_index = model_df.sample(
+                n=MAX_SHAP_EXPLANATION_ROWS,
+                random_state=RANDOM_STATE,
+            ).index
+        else:
+            shap_index = model_df.index
+
+        X_shap = X.loc[shap_index]
+        explainer = shap.TreeExplainer(model)
+        shap_values = explainer.shap_values(X_shap)
+
+        if isinstance(shap_values, list):
+            shap_values = shap_values[0]
+
+        shap_values = np.asarray(shap_values)
+
+        base_value = explainer.expected_value
+        if isinstance(base_value, (list, np.ndarray)):
+            base_value = float(np.asarray(base_value).ravel()[0])
+        else:
+            base_value = float(base_value)
+
+        mean_abs = np.abs(shap_values).mean(axis=0)
+        shap_summary_features = sorted(
+            zip(available_features, mean_abs),
+            key=lambda x: x[1],
+            reverse=True,
+        )[:8]
+        shap_summary_features = [(name, float(value)) for name, value in shap_summary_features]
+
+        shap_result = pd.DataFrame(index=shap_index)
+        shap_result["shap_base_value"] = base_value
+        shap_result["shap_total_effect"] = shap_values.sum(axis=1)
+        shap_result["shap_top_positive"] = "N/A"
+        shap_result["shap_top_negative"] = "N/A"
+        shap_result["shap_explanation"] = "N/A"
+        shap_result["shap_dominant_feature"] = "N/A"
+        shap_result["shap_dominant_value"] = np.nan
+
+        for row_pos, idx in enumerate(shap_index):
+            vals = shap_values[row_pos]
+            pairs = list(zip(available_features, vals))
+            pos = sorted([p for p in pairs if p[1] > 0], key=lambda x: x[1], reverse=True)[:3]
+            neg = sorted([p for p in pairs if p[1] < 0], key=lambda x: x[1])[:3]
+            dominant = max(pairs, key=lambda x: abs(x[1]))
+
+            pos_text = "; ".join([f"{name}: {money_effect(value)}" for name, value in pos]) if pos else "None"
+            neg_text = "; ".join([f"{name}: {money_effect(value)}" for name, value in neg]) if neg else "None"
+            explanation = (
+                f"Base price: ${base_value:,.0f}<br>"
+                f"Positive factors: {pos_text}<br>"
+                f"Negative factors: {neg_text}"
+            )
+
+            shap_result.loc[idx, "shap_top_positive"] = pos_text
+            shap_result.loc[idx, "shap_top_negative"] = neg_text
+            shap_result.loc[idx, "shap_explanation"] = explanation
+            shap_result.loc[idx, "shap_dominant_feature"] = dominant[0]
+            shap_result.loc[idx, "shap_dominant_value"] = float(dominant[1])
+
+        model_df.loc[shap_result.index, shap_cols] = shap_result[shap_cols]
+        shap_available = True
+
+    except Exception as e:
+        shap_error = str(e)
+        print("SHAP skipped:", shap_error)
+
+    df.loc[
+        model_df.index,
+        ["predicted_price", "prediction_gap", "prediction_gap_pct"]
+    ] = model_df[["predicted_price", "prediction_gap", "prediction_gap_pct"]]
+
+    for col in shap_cols:
+        if col in model_df.columns:
+            df.loc[model_df.index, col] = model_df[col]
+
     metrics = {
         "mae": float(mean_absolute_error(y_test, y_pred)),
         "r2": float(r2_score(y_test, y_pred)),
         "features": importance[:8],
+        "shap_available": shap_available,
+        "shap_summary_features": shap_summary_features,
+        "shap_error": shap_error,
     }
 
     return df, metrics
-
 
 def add_kmeans_cluster(df, n_clusters=6):
     features = [
@@ -682,6 +791,26 @@ def deal_color(row):
     return "#2b83ba"
 
 
+def shap_color(row):
+    value = row.get("shap_dominant_value", np.nan)
+
+    if pd.isna(value):
+        return "#999999"
+
+    value = float(value)
+
+    if value >= 100000:
+        return "#d73027"
+    if value >= 30000:
+        return "#fdae61"
+    if value <= -100000:
+        return "#2c7bb6"
+    if value <= -30000:
+        return "#00a6ca"
+
+    return "#ffffbf"
+
+
 def land_radius(land_area):
     land_area = float(land_area)
 
@@ -723,6 +852,10 @@ def popup_html(row):
 
     pred_line = ""
 
+    shap_explanation = row.get("shap_explanation", "N/A")
+    shap_dominant_feature = row.get("shap_dominant_feature", "N/A")
+    shap_dominant_value = row.get("shap_dominant_value", np.nan)
+
     if not pd.isna(pred):
         pred_line = f"Predicted: ${pred:,.0f}<br>Gap: ${gap:,.0f}<br>"
 
@@ -745,11 +878,19 @@ def popup_html(row):
     local_ppsqm_gap_text = "N/A" if pd.isna(local_ppsqm_gap_pct) else f"{float(local_ppsqm_gap_pct) * 100:+.1f}%"
     suburb_gap_text = "N/A" if pd.isna(suburb_gap_pct) else f"{float(suburb_gap_pct) * 100:+.1f}%"
 
+    shap_dominant_text = "N/A"
+    if not pd.isna(shap_dominant_value):
+        sign = "+" if float(shap_dominant_value) >= 0 else "-"
+        shap_dominant_text = f"{shap_dominant_feature}: {sign}${abs(float(shap_dominant_value)):,.0f}"
+
     return f"""
     <b>{row.get('address', '')}</b><br>
     {row.get('suburb', '')}<br>
     Price: ${price:,.0f}<br>
     {pred_line}
+    <b>SHAP explanation</b><br>
+    Main factor: {shap_dominant_text}<br>
+    {shap_explanation}<br>
     KMeans Type: {int(row.get('house_group', 0))}<br>
     DBSCAN: {dbscan_text}<br>
     Isolation Forest: {isolation_text}<br>
@@ -949,6 +1090,7 @@ class LightInfoPane(MacroElement):
         deal_layer_name,
         gap_layer_name,
         isolation_layer_name,
+        shap_layer_name,
         metrics,
         pca_metrics,
         dbscan_summary,
@@ -971,6 +1113,17 @@ class LightInfoPane(MacroElement):
                 f"<li><b>{name}</b>: {importance:.3f}</li>"
                 for name, importance in metrics.get("features", [])
             )
+
+        if metrics.get("shap_available"):
+            shap_status_text = "Available"
+            shap_feature_html = "".join(
+                f"<li><b>{name}</b>: average impact ${value:,.0f}</li>"
+                for name, value in metrics.get("shap_summary_features", [])
+            )
+        else:
+            shap_status_text = "Not available"
+            shap_error = metrics.get("shap_error") or "Install shap package or check model output."
+            shap_feature_html = f"<li>{shap_error}</li>"
 
         pca_ev = pca_metrics.get("explained_variance", []) if pca_metrics else []
 
@@ -1218,6 +1371,28 @@ class LightInfoPane(MacroElement):
                 <div class="legend-row"><span class="circle-swatch" style="background:#d73027"></span><span><b>Red</b> — actual price is more than 5% above predicted value</span></div>
             </div>
 
+            <div id="shap-info" class="section">
+                <h4>SHAP Model Explanation View</h4>
+                <p>
+                    SHAP explains why the Random Forest predicted a certain property price.
+                    Positive values push the prediction higher. Negative values push it lower.
+                </p>
+                <div class="metric-box">
+                    <b>SHAP status</b>: {shap_status_text}<br>
+                    The marker color is based on the largest single SHAP factor for that property.
+                </div>
+                <h4>Top SHAP Drivers</h4>
+                <ol>{shap_feature_html}</ol>
+                <div class="legend-row"><span class="circle-swatch" style="background:#d73027"></span><span><b>Strong positive</b> — feature pushed predicted price up strongly</span></div>
+                <div class="legend-row"><span class="circle-swatch" style="background:#fdae61"></span><span><b>Positive</b> — feature pushed predicted price up</span></div>
+                <div class="legend-row"><span class="circle-swatch" style="background:#ffffbf"></span><span><b>Small effect</b> — no single dominant factor</span></div>
+                <div class="legend-row"><span class="circle-swatch" style="background:#00a6ca"></span><span><b>Negative</b> — feature pushed predicted price down</span></div>
+                <div class="legend-row"><span class="circle-swatch" style="background:#2c7bb6"></span><span><b>Strong negative</b> — feature pushed predicted price down strongly</span></div>
+                <p class="small-note">
+                    Open a marker popup to see the top positive and negative factors, such as floor_area +$120k or cbd_dist -$80k.
+                </p>
+            </div>
+
             <div id="gap-info" class="section">
                 <h4>Local Price Gap Zones</h4>
                 <p>
@@ -1253,6 +1428,9 @@ class LightInfoPane(MacroElement):
 
             document.getElementById("isolation-info").style.display =
                 {map_name}.hasLayer({isolation_layer_name}) ? "block" : "none";
+
+            document.getElementById("shap-info").style.display =
+                {map_name}.hasLayer({shap_layer_name}) ? "block" : "none";
         }}
 
         {map_name}.on("overlayadd overlayremove", updateInfoPane);
@@ -1414,6 +1592,7 @@ def create_map(df_map, gap_pairs, metrics, pca_metrics, dbscan_summary, isolatio
     deal_layer = folium.FeatureGroup(name="RF Valuation Candidates", show=False).add_to(m)
     gap_layer = folium.FeatureGroup(name="Local Price Gap Zones", show=False).add_to(m)
     isolation_layer = folium.FeatureGroup(name="Isolation Forest Anomaly View", show=False).add_to(m)
+    shap_layer = folium.FeatureGroup(name="SHAP Explanation View", show=False).add_to(m)
 
     LABEL_ZOOM_THRESHOLD = 14
 
@@ -1447,6 +1626,11 @@ def create_map(df_map, gap_pairs, metrics, pca_metrics, dbscan_summary, isolatio
         name="PCA Similarity Cluster",
         options=cluster_options,
     ).add_to(pca_layer)
+
+    shap_cluster = MarkerCluster(
+        name="SHAP Explanation Cluster",
+        options=cluster_options,
+    ).add_to(shap_layer)
 
     for _, row in df_map.iterrows():
         price = float(row["price"])
@@ -1527,6 +1711,21 @@ def create_map(df_map, gap_pairs, metrics, pca_metrics, dbscan_summary, isolatio
         isolation_marker.options["dbscanGroup"] = int(row["dbscan_group"])
         isolation_marker.add_to(isolation_layer)
 
+        shap_marker = folium.CircleMarker(
+            location=[row["latitude"], row["longitude"]],
+            radius=radius + 2,
+            color="#222222",
+            fill=True,
+            fill_color=shap_color(row),
+            fill_opacity=0.92,
+            weight=1,
+            popup=folium.Popup(html, max_width=320),
+        )
+        shap_marker.options["price"] = price
+        shap_marker.options["houseGroup"] = int(row["house_group"])
+        shap_marker.options["dbscanGroup"] = int(row["dbscan_group"])
+        shap_marker.add_to(shap_cluster)
+
     deal_valid = df_map.dropna(subset=["prediction_gap_pct"]).copy()
     per_group = max(1, MAX_DEAL_MARKERS // 3)
 
@@ -1596,6 +1795,7 @@ def create_map(df_map, gap_pairs, metrics, pca_metrics, dbscan_summary, isolatio
         deal_layer_name=deal_layer.get_name(),
         gap_layer_name=gap_layer.get_name(),
         isolation_layer_name=isolation_layer.get_name(),
+        shap_layer_name=shap_layer.get_name(),
         metrics=metrics,
         pca_metrics=pca_metrics,
         dbscan_summary=dbscan_summary,
@@ -1625,6 +1825,7 @@ def create_map(df_map, gap_pairs, metrics, pca_metrics, dbscan_summary, isolatio
             dbscan_layer.get_name(),
             pca_layer.get_name(),
             isolation_layer.get_name(),
+            shap_layer.get_name(),
         ],
     ))
 
@@ -1656,6 +1857,7 @@ def main():
 
     df, metrics = train_random_forest(df)
     print("Random Forest metrics:", metrics)
+    print("SHAP available:", metrics.get("shap_available"), metrics.get("shap_error"))
 
     df = add_kmeans_cluster(df, n_clusters=6)
 

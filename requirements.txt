@@ -5,3 +5,4 @@ pyarrow
 folium
 scikit-learn
 xgboost
+shap

@@ -833,6 +833,34 @@ def format_price_label(price):
     return f"${price / 1000:.0f}k"
 
 
+def format_shap_label(row):
+    """
+    Price label for the map.
+
+    Example:
+      $570k | cbd_dist -$120k
+      $775k | floor_area +$98k
+
+    The SHAP part shows the dominant feature that pushed the
+    Random Forest predicted price up or down.
+    """
+    price_text = format_price_label(row["price"])
+
+    feature = row.get("shap_dominant_feature", "N/A")
+    value = row.get("shap_dominant_value", np.nan)
+
+    if pd.isna(value) or feature in [None, "", "N/A"]:
+        return price_text
+
+    value = float(value)
+    sign = "+" if value >= 0 else "-"
+
+    # Keep label short enough for the map.
+    impact_text = f"{sign}${abs(value) / 1000:.0f}k"
+
+    return f"{price_text} | {feature} {impact_text}"
+
+
 def popup_html(row):
     price = float(row["price"])
     pred = row.get("predicted_price", np.nan)
@@ -1471,7 +1499,7 @@ class ViewportPriceLabelController(MacroElement):
                 border-radius: 999px;
                 background: linear-gradient(135deg, #0f5bd8 0%, #1e9bff 52%, #72d7ff 100%);
                 color: white;
-                font-size: 11px;
+                font-size: 10px;
                 font-weight: 800;
                 line-height: 1;
                 letter-spacing: 0.1px;
@@ -1519,8 +1547,8 @@ class ViewportPriceLabelController(MacroElement):
                     '<span class="price-badge-dot"></span>' +
                     '<span>' + text + '</span>' +
                     '</div>',
-                iconSize: [76, 26],
-                iconAnchor: [38, 30]
+                iconSize: [190, 26],
+                iconAnchor: [95, 30]
             }});
         }}
 
@@ -1810,7 +1838,7 @@ def create_map(df_map, gap_pairs, metrics, pca_metrics, dbscan_summary, isolatio
         [
             float(row["latitude"]),
             float(row["longitude"]),
-            format_price_label(row["price"]),
+            format_shap_label(row),
         ]
         for _, row in df_map.dropna(subset=["latitude", "longitude", "price"]).iterrows()
     ]
